@@ -1,7 +1,7 @@
 from datetime import timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Form
+from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
@@ -54,7 +54,7 @@ def test_token(current_user: CurrentUser) -> Any:
 
 @router.post("/login/refresh-token")
 def refresh_access_token(
-    session: SessionDep, 
+    session: SessionDep,
     refresh_token: Annotated[str, Form()]
 ) -> Token:
     """
@@ -63,13 +63,13 @@ def refresh_access_token(
     user_id = security.verify_token(refresh_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
-    
+
     user = session.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     elif not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
-    
+
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     return Token(
         access_token=security.create_access_token(
