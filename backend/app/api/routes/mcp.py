@@ -14,6 +14,7 @@ from app.models import (
     MCPServerUpdate,
     Message,
 )
+from app.services.mcp_manager import mcp_manager
 
 router = APIRouter()
 
@@ -110,7 +111,7 @@ def delete_server(
 
 
 @router.post("/servers/{server_id}/connect", response_model=MCPConnectionStatus)
-def connect_server(
+async def connect_server(
     session: SessionDep, current_user: CurrentUser, server_id: uuid.UUID
 ) -> Any:
     """
@@ -125,58 +126,28 @@ def connect_server(
     if not server.is_enabled:
         raise HTTPException(status_code=400, detail="Server is disabled")
 
-    # Update server status to connecting
-    server.status = "connecting"
-    server.error_message = None
-    session.add(server)
-    session.commit()
+    # Use MCP manager to connect
+    success = await mcp_manager.connect_server(server, session)
 
-    # TODO: Implement actual MCP connection logic here
-    # For now, simulate a successful connection
-    try:
-        # Simulate connection process
-        # This would normally involve:
-        # 1. Establishing transport (stdio or HTTP+SSE)
-        # 2. Performing MCP handshake
-        # 3. Getting server capabilities, tools, resources, prompts
+    # Refresh server to get updated status
+    session.refresh(server)
 
-        # Mock successful connection
-        server.status = "connected"
-        server.capabilities = {
-            "tools": {},
-            "resources": {},
-            "prompts": {}
-        }
-        server.tools = []
-        server.resources = []
-        server.prompts = []
-
-        session.add(server)
-        session.commit()
-        session.refresh(server)
-
+    if success:
         return MCPConnectionStatus(
             server_id=server.id,
-            status="connected",
+            status=server.status,
             message="Successfully connected to MCP server"
         )
-
-    except Exception as e:
-        # Handle connection error
-        server.status = "error"
-        server.error_message = str(e)
-        session.add(server)
-        session.commit()
-
+    else:
         return MCPConnectionStatus(
             server_id=server.id,
-            status="error",
-            message=f"Failed to connect: {str(e)}"
+            status=server.status,
+            message=server.error_message or "Failed to connect to MCP server"
         )
 
 
 @router.post("/servers/{server_id}/disconnect", response_model=MCPConnectionStatus)
-def disconnect_server(
+async def disconnect_server(
     session: SessionDep, current_user: CurrentUser, server_id: uuid.UUID
 ) -> Any:
     """
@@ -188,29 +159,28 @@ def disconnect_server(
     if server.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not enough permissions")
 
-    # TODO: Implement actual MCP disconnection logic here
-    # For now, simulate disconnection
+    # Use MCP manager to disconnect
+    success = await mcp_manager.disconnect_server(server, session)
 
-    server.status = "disconnected"
-    server.error_message = None
-    server.capabilities = None
-    server.tools = None
-    server.resources = None
-    server.prompts = None
-
-    session.add(server)
-    session.commit()
+    # Refresh server to get updated status
     session.refresh(server)
 
-    return MCPConnectionStatus(
-        server_id=server.id,
-        status="disconnected",
-        message="Successfully disconnected from MCP server"
-    )
+    if success:
+        return MCPConnectionStatus(
+            server_id=server.id,
+            status=server.status,
+            message="Successfully disconnected from MCP server"
+        )
+    else:
+        return MCPConnectionStatus(
+            server_id=server.id,
+            status=server.status,
+            message=server.error_message or "Failed to disconnect from MCP server"
+        )
 
 
 @router.post("/servers/{server_id}/tools/{tool_name}/call")
-def call_tool(
+async def call_tool(
     session: SessionDep,
     current_user: CurrentUser,
     server_id: uuid.UUID,
@@ -229,18 +199,16 @@ def call_tool(
     if server.status != "connected":
         raise HTTPException(status_code=400, detail="Server is not connected")
 
-    # TODO: Implement actual tool calling logic
-    # For now, return a mock response
-    return {
-        "tool": tool_name,
-        "arguments": arguments or {},
-        "result": f"Mock result for tool '{tool_name}' with arguments {arguments}",
-        "timestamp": "2025-01-06T00:00:00Z"
-    }
+    # Use MCP manager to call tool
+    try:
+        result = await mcp_manager.call_tool(server_id, tool_name, arguments or {})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/servers/{server_id}/resources/{resource_uri:path}")
-def get_resource(
+async def get_resource(
     session: SessionDep,
     current_user: CurrentUser,
     server_id: uuid.UUID,
@@ -258,18 +226,16 @@ def get_resource(
     if server.status != "connected":
         raise HTTPException(status_code=400, detail="Server is not connected")
 
-    # TODO: Implement actual resource retrieval logic
-    # For now, return a mock response
-    return {
-        "uri": resource_uri,
-        "content": f"Mock content for resource '{resource_uri}'",
-        "mimeType": "text/plain",
-        "timestamp": "2025-01-06T00:00:00Z"
-    }
+    # Use MCP manager to read resource
+    try:
+        result = await mcp_manager.read_resource(server_id, resource_uri)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/servers/{server_id}/prompts/{prompt_name}")
-def get_prompt(
+async def get_prompt(
     session: SessionDep,
     current_user: CurrentUser,
     server_id: uuid.UUID,
@@ -288,11 +254,21 @@ def get_prompt(
     if server.status != "connected":
         raise HTTPException(status_code=400, detail="Server is not connected")
 
-    # TODO: Implement actual prompt retrieval logic
-    # For now, return a mock response
-    return {
-        "prompt": prompt_name,
-        "arguments": arguments or {},
-        "content": f"Mock prompt content for '{prompt_name}' with arguments {arguments}",
-        "timestamp": "2025-01-06T00:00:00Z"
-    }
+    # Use MCP manager to get prompt
+    try:
+        result = await mcp_manager.get_prompt(server_id, prompt_name, arguments or {})
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/health")
+async def mcp_health_check() -> Any:
+    """
+    Get health status of MCP manager and connections.
+    """
+    try:
+        health_status = await mcp_manager.health_check()
+        return health_status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
