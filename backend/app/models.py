@@ -100,6 +100,7 @@ class Message(SQLModel):
 # JSON payload containing access token
 class Token(SQLModel):
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
 
 
