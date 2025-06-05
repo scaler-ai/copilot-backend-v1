@@ -4,6 +4,15 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app/
 
+# Install Node.js for GitHub MCP server support
+RUN apt-get update && apt-get install -y \
+    curl \
+    && curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install -g npm@latest
+
 # Install uv
 # Ref: https://docs.astral.sh/uv/guides/integration/docker/#installing-uv
 COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /uvx /bin/
