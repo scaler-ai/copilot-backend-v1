@@ -1,5 +1,5 @@
 import uuid
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import EmailStr
 from sqlalchemy import JSON, Column
@@ -48,6 +48,7 @@ class User(UserBase, table=True):
     items: list["Item"] = Relationship(back_populates="owner", cascade_delete=True)
     mcp_servers: list["MCPServer"] = Relationship(back_populates="owner", cascade_delete=True)
     chat_conversations: list["ChatConversation"] = Relationship(back_populates="owner", cascade_delete=True)
+    llm_settings: Optional["LLMSettings"] = Relationship(back_populates="owner", cascade_delete=True, sa_relationship_kwargs={"uselist": False})
 
 
 # Properties to return via API, id is always required
@@ -124,6 +125,7 @@ class MCPServerBase(SQLModel):
     description: str | None = Field(default=None, max_length=1000)
     transport: str = Field(regex="^(stdio|http_sse)$")  # Transport type
     command: str | None = Field(default=None, max_length=1000)  # For stdio transport
+    args: list[str] | None = Field(default=None)  # Command arguments for stdio transport
     url: str | None = Field(default=None, max_length=500)  # For http_sse transport
     is_remote: bool = Field(default=False)  # Remote vs local server
     is_enabled: bool = Field(default=True)  # Whether server can be connected
@@ -139,6 +141,7 @@ class MCPServerUpdate(SQLModel):
     description: str | None = Field(default=None, max_length=1000)
     transport: str | None = Field(default=None, regex="^(stdio|http_sse)$")
     command: str | None = Field(default=None, max_length=1000)
+    args: list[str] | None = Field(default=None)
     url: str | None = Field(default=None, max_length=500)
     is_remote: bool | None = Field(default=None)
     is_enabled: bool | None = Field(default=None)
@@ -151,6 +154,7 @@ class MCPServer(MCPServerBase, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     status: str = Field(default="disconnected")  # connected|connecting|disconnected|error
     error_message: str | None = Field(default=None, max_length=1000)
+    args: list[str] | None = Field(default=None, sa_column=Column(JSON))  # Command arguments (JSON)
     auth_config: Any | None = Field(default=None, sa_column=Column(JSON))  # Auth configuration (JSON)
     capabilities: Any | None = Field(default=None, sa_column=Column(JSON))  # Server capabilities (JSON)
     tools: Any | None = Field(default=None, sa_column=Column(JSON))  # Available tools (JSON)
@@ -165,6 +169,7 @@ class MCPServerPublic(MCPServerBase):
     id: uuid.UUID
     status: str
     error_message: str | None
+    args: list[str] | None
     auth_config: Any | None
     capabilities: Any | None
     tools: Any | None
@@ -263,3 +268,58 @@ class ChatConversationsPublic(SQLModel):
 class ChatMessagesPublic(SQLModel):
     data: list[ChatMessagePublic]
     count: int
+
+
+# LLM Settings Models
+class LLMSettingsBase(SQLModel):
+    provider: str = Field(max_length=50)  # 'openai', 'anthropic', 'google', 'azure', etc.
+    model: str = Field(max_length=100)  # 'gpt-4', 'claude-3-5-sonnet', 'gemini-pro', etc.
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=2000, ge=1, le=8000)
+    is_active: bool = Field(default=True)
+
+
+class LLMSettingsCreate(LLMSettingsBase):
+    api_key: str = Field(min_length=1, max_length=500)  # Will be encrypted before storage
+
+
+class LLMSettingsUpdate(SQLModel):
+    provider: str | None = Field(default=None, max_length=50)
+    model: str | None = Field(default=None, max_length=100)
+    api_key: str | None = Field(default=None, min_length=1, max_length=500)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=1, le=8000)
+    is_active: bool | None = Field(default=None)
+
+
+# Database model
+class LLMSettings(LLMSettingsBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    encrypted_api_key: str = Field(max_length=1000)  # Encrypted API key
+    created_at: str = Field(default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat())
+    owner_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE", unique=True)
+    owner: User | None = Relationship(back_populates="llm_settings")
+
+
+# Public model for API responses (excludes API key)
+class LLMSettingsPublic(LLMSettingsBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    owner_id: uuid.UUID
+    # Note: API key is never included in public responses
+
+
+# LLM Provider and Model definitions
+class LLMProvider(SQLModel):
+    name: str
+    display_name: str
+    models: list[str]
+    requires_api_key: bool
+    default_model: str
+    max_tokens_limit: int
+
+
+class LLMProvidersResponse(SQLModel):
+    providers: list[LLMProvider]

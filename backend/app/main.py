@@ -84,6 +84,7 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     generate_unique_id_function=custom_generate_unique_id,
     lifespan=lifespan,
+    redirect_slashes=False,  # Disable automatic trailing slash redirects to prevent CORS issues with proxy
 )
 
 # Set all CORS enabled origins

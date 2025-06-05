@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 
 from app.models import MCPServer, User, ChatConversation, ChatMessageDB
 from app.services.mcp_manager import mcp_manager
+from app.services.llm_service import llm_service
 
 
 logger = logging.getLogger(__name__)
@@ -42,19 +43,26 @@ class ChatService:
             # Get user's connected MCP servers
             connected_servers = await self._get_user_connected_servers(user, session)
             
-            # Analyze message for potential tool calls
-            tool_analysis = await self._analyze_message_for_tools(message, connected_servers)
+            # Analyze message for potential tool calls using LLM
+            tool_analysis = await llm_service.analyze_for_tools(
+                user, session, message, self._format_tools_for_analysis(connected_servers)
+            )
             
             # Execute any identified tools
             tool_results = []
             if tool_analysis.get("requires_tools"):
-                tool_results = await self._execute_required_tools(
-                    tool_analysis["tools"], user, session
+                # Convert LLM tool analysis to execution format
+                execution_tools = await self._prepare_tools_for_execution(
+                    tool_analysis["tools"], connected_servers, user, session
                 )
+                if execution_tools:
+                    tool_results = await self._execute_required_tools(
+                        execution_tools, user, session
+                    )
             
             # Generate LLM response with context and tool results
-            llm_response = await self._generate_llm_response(
-                message, tool_results, connected_servers, conversation_id
+            llm_response = await self._generate_llm_response_with_service(
+                user, session, message, tool_results, connected_servers, conversation_id
             )
             
             # Store conversation and messages in database
@@ -136,6 +144,192 @@ class ChatService:
                 "error": str(e)
             }
     
+    def _format_tools_for_analysis(self, connected_servers: List[Dict]) -> List[Dict]:
+        """Format connected servers' tools for LLM analysis"""
+        tools = []
+        for server in connected_servers:
+            for tool in server.get("tools", []):
+                tools.append({
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "server": server["name"],
+                    "parameters": tool.get("parameters", {})
+                })
+        return tools
+
+    async def _generate_llm_response_with_service(
+        self, 
+        user: User,
+        session: Session,
+        message: str, 
+        tool_results: List[Dict], 
+        connected_servers: List[Dict],
+        conversation_id: Optional[str] = None
+    ) -> str:
+        """Generate LLM response using the LLM service"""
+        
+        # Prepare conversation context
+        messages = [
+            {
+                "role": "system",
+                "content": self._build_system_prompt(connected_servers, tool_results)
+            },
+            {
+                "role": "user", 
+                "content": message
+            }
+        ]
+        
+        # Add tool results context if available
+        if tool_results:
+            tool_context = self._format_tool_results_for_llm(tool_results)
+            messages.insert(-1, {
+                "role": "assistant",
+                "content": f"I have executed the following tools based on your request:\n\n{tool_context}"
+            })
+        
+        try:
+            # Generate response using LLM service
+            result = await llm_service.generate_response(user, session, messages)
+            
+            if result["success"]:
+                return result["content"]
+            else:
+                # Fallback to rule-based response if LLM fails
+                logger.warning(f"LLM generation failed: {result.get('error')}")
+                return await self._generate_llm_response(
+                    message, tool_results, connected_servers, conversation_id
+                )
+                
+        except Exception as e:
+            logger.error(f"LLM service error: {e}")
+            # Fallback to rule-based response
+            return await self._generate_llm_response(
+                message, tool_results, connected_servers, conversation_id
+            )
+    
+    def _build_system_prompt(self, connected_servers: List[Dict], tool_results: List[Dict]) -> str:
+        """Build system prompt for the LLM"""
+        prompt = """You are an intelligent AI assistant that helps users interact with their connected MCP (Model Context Protocol) servers. You can access various tools and data sources to provide helpful responses.
+
+Your capabilities:
+- Analyze user requests and determine when to use specific tools
+- Execute tools through MCP servers to retrieve data
+- Provide clear, helpful responses based on tool results
+- Handle CRM operations, lead management, and other business workflows
+
+Guidelines:
+- Be conversational and helpful
+- When tool results are available, integrate them naturally into your response
+- Format data clearly (use bullet points, numbers, etc.)
+- If no tools were needed, provide general assistance
+- Always be honest about what you can and cannot do
+"""
+        
+        if connected_servers:
+            prompt += f"\n\nConnected MCP Servers ({len(connected_servers)}):\n"
+            for server in connected_servers:
+                prompt += f"- {server['name']}: {server.get('description', 'No description')}\n"
+                if server.get('tools'):
+                    prompt += f"  Available tools: {len(server['tools'])}\n"
+        
+        if tool_results:
+            prompt += f"\n\nTool execution results are available and should be used to provide a comprehensive response."
+        
+        return prompt
+    
+    def _format_tool_results_for_llm(self, tool_results: List[Dict]) -> str:
+        """Format tool results for LLM context"""
+        formatted_results = []
+        
+        for result in tool_results:
+            tool_name = result.get("tool_name", "Unknown")
+            server_name = result.get("server_name", "Unknown")
+            success = result.get("success", False)
+            
+            if success:
+                # Extract useful data from the result
+                tool_result = result.get("result", {})
+                
+                if tool_result.get("result", {}).get("content"):
+                    content_text = tool_result["result"]["content"][0].get("text", "")
+                    try:
+                        data = json.loads(content_text)
+                        formatted_results.append(f"✅ {tool_name} ({server_name}): Retrieved {len(data.get('leads', data.get('data', [])))} records")
+                    except:
+                        formatted_results.append(f"✅ {tool_name} ({server_name}): {content_text[:100]}...")
+                else:
+                    formatted_results.append(f"✅ {tool_name} ({server_name}): Executed successfully")
+            else:
+                error_msg = result.get("result", {}).get("error", "Unknown error")
+                formatted_results.append(f"❌ {tool_name} ({server_name}): {error_msg}")
+        
+        return "\n".join(formatted_results)
+
+    async def _prepare_tools_for_execution(
+        self,
+        llm_tools: List[Dict],
+        connected_servers: List[Dict],
+        user: User,
+        session: Session
+    ) -> List[Dict]:
+        """Convert LLM tool analysis format to execution format"""
+        execution_tools = []
+        
+        for llm_tool in llm_tools:
+            tool_name = llm_tool.get("name")
+            parameters = llm_tool.get("parameters", {})
+            
+            # Find the server that has this tool
+            server_info = None
+            for server in connected_servers:
+                for tool in server.get("tools", []):
+                    if tool["name"] == tool_name:
+                        server_info = server
+                        break
+                if server_info:
+                    break
+            
+            if not server_info:
+                logger.warning(f"Tool {tool_name} not found in any connected server")
+                continue
+            
+            # Check if this tool requires authentication
+            requires_auth = self._tool_requires_authentication(tool_name)
+            
+            # If authentication is required, add auto_authenticate first
+            if requires_auth and not any(t.get("tool_name") == "auto_authenticate" and t.get("server_id") == server_info["id"] for t in execution_tools):
+                execution_tools.append({
+                    "server_id": server_info["id"],
+                    "server_name": server_info["name"],
+                    "tool_name": "auto_authenticate",
+                    "description": "Authenticate with server",
+                    "parameters": {},
+                    "requires_auth_token": False
+                })
+            
+            # Add the main tool
+            execution_tools.append({
+                "server_id": server_info["id"],
+                "server_name": server_info["name"],
+                "tool_name": tool_name,
+                "description": llm_tool.get("description", ""),
+                "parameters": parameters,
+                "requires_auth_token": requires_auth
+            })
+        
+        return execution_tools
+    
+    def _tool_requires_authentication(self, tool_name: str) -> bool:
+        """Check if a tool requires authentication"""
+        # List of tools that require authentication
+        auth_required_tools = [
+            "get_leads", "search_leads_simple", "get_my_assigned_leads",
+            "search_leads_advanced", "get_sales_team", "get_lead_activity_history",
+            "get_lead_call_summaries"
+        ]
+        return tool_name in auth_required_tools
+
     async def _get_user_connected_servers(self, user: User, session: Session) -> List[Dict]:
         """Get list of user's connected MCP servers with their tools"""
         statement = select(MCPServer).where(

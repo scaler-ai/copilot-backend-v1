@@ -239,13 +239,16 @@ class MCPManager:
             if not server.command:
                 raise ValueError("stdio transport requires command")
 
-            # Parse command and arguments
-            command_parts = server.command.split()
-            if not command_parts:
-                raise ValueError("Invalid command")
+            # Use the command and args fields directly
+            command = server.command
+            args = server.args or []
 
-            command = command_parts[0]
-            args = command_parts[1:] if len(command_parts) > 1 else []
+            # If args field is empty but command contains spaces, fall back to splitting
+            # This maintains backward compatibility with existing servers
+            if not args and " " in command:
+                command_parts = command.split()
+                command = command_parts[0]
+                args = command_parts[1:]
 
             # Prepare environment variables
             env = {}
@@ -253,7 +256,7 @@ class MCPManager:
                 # Add auth config as environment variables
                 for key, value in server.auth_config.items():
                     if isinstance(value, str):
-                        env[f"MCP_{key.upper()}"] = value
+                        env[key] = value  # Use original key names, not MCP_ prefixed
 
             return MCPStdioTransport(command, args, env)
 
