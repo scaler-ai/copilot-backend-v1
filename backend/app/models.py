@@ -182,3 +182,26 @@ class MCPConnectionStatus(SQLModel):
     server_id: uuid.UUID
     status: str
     message: str
+
+
+# Chat Models
+class ChatMessage(SQLModel):
+    message: str = Field(min_length=1, max_length=5000)
+    conversation_id: str | None = Field(default=None, max_length=100)
+
+
+class ChatToolCall(SQLModel):
+    server_id: str
+    server_name: str
+    tool_name: str
+    parameters: dict[str, Any]
+    result: dict[str, Any]
+    success: bool
+
+
+class ChatResponse(SQLModel):
+    response: str
+    tool_calls: list[ChatToolCall]
+    servers_used: list[str]
+    conversation_id: str | None
+    error: str | None = None
