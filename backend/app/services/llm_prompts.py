@@ -32,6 +32,14 @@ Your capabilities:
 - Provide clear, helpful responses based on tool results
 - Handle CRM operations, lead management, and other business workflows
 
+CRITICAL RULES - NEVER VIOLATE THESE:
+- NEVER make up, invent, or hallucinate data
+- ONLY use data that was actually returned by MCP tool calls
+- If no real data is available, clearly state that no data was found
+- If tool execution failed, report the actual error
+- NEVER create fake names, emails, companies, or any other details
+- Always base your response on actual tool results provided to you
+
 Guidelines:
 - Be conversational and helpful
 - When tool results are available, integrate them naturally into your response
@@ -49,7 +57,7 @@ Guidelines:
         
         # Add tool execution context
         if tool_results:
-            base_prompt += f"\n\nTool execution results are available and should be used to provide a comprehensive response."
+            base_prompt += f"\n\nTool execution results are available and should be used to provide a comprehensive response.\n\nREMINDER: You must ONLY use the actual data provided in the tool results. Do NOT create fake data, names, emails, or any other details. If the data is missing or insufficient, say so clearly."
         
         return base_prompt
     
@@ -192,6 +200,71 @@ Generate your response now:"""
                 "prospect", "prospects", "sales", "pipeline"
             ]
         }
+
+    @staticmethod
+    def get_tool_results_instruction() -> str:
+        """
+        Get the instruction to append when providing tool results to LLM.
+        
+        Returns:
+            Instruction text for tool results context
+        """
+        return "IMPORTANT: Use ONLY the actual data shown above. Do NOT make up or invent any information."
+
+    @staticmethod
+    def get_data_labels() -> Dict[str, str]:
+        """
+        Get standardized labels for formatting tool results data.
+        
+        Returns:
+            Dictionary of data type labels
+        """
+        return {
+            "leads_data": "ACTUAL LEAD DATA:",
+            "general_data": "ACTUAL DATA:",
+            "authentication_success": "Successfully authenticated",
+            "no_data_returned": "Executed successfully (no data returned)",
+            "error_prefix": "ERROR -"
+        }
+
+    @staticmethod
+    def validate_response_against_data(response: str, tool_results: List[Dict]) -> bool:
+        """
+        Validate that the response doesn't contain hallucinated data.
+        
+        Args:
+            response: The LLM-generated response
+            tool_results: The actual tool results that should be the source of truth
+            
+        Returns:
+            True if response seems valid, False if it likely contains hallucinated data
+        """
+        # Common signs of hallucination
+        suspicious_patterns = [
+            "John Doe", "Jane Smith", "Robert Johnson", "Alice Williams", "Michael Brown",
+            "ABC Corp", "XYZ LLC", "123 Industries", "789 Solutions", "DEF Inc",
+            "@abccorp.com", "@xyzllc.com", "@123ind.com", "@789solutions.com", "@definc.com"
+        ]
+        
+        # Check if response contains common fake data patterns
+        response_lower = response.lower()
+        for pattern in suspicious_patterns:
+            if pattern.lower() in response_lower:
+                return False
+        
+        # If we have tool results with actual data, ensure response references real data
+        if tool_results:
+            has_real_data = False
+            for result in tool_results:
+                if result.get("success") and result.get("result", {}).get("result", {}).get("content"):
+                    has_real_data = True
+                    break
+            
+            # If we have real data but response contains generic examples, flag as suspicious
+            if has_real_data and any(pattern in response_lower for pattern in ["lead #1", "lead #2", "example.com"]):
+                return False
+        
+        return True
 
     @staticmethod
     def get_error_messages() -> Dict[str, str]:

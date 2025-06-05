@@ -184,9 +184,10 @@ class ChatService:
         # Add tool results context if available
         if tool_results:
             tool_context = self._format_tool_results_for_llm(tool_results)
+            tool_instruction = LLMPrompts.get_tool_results_instruction()
             messages.insert(-1, {
                 "role": "assistant",
-                "content": f"I have executed the following tools based on your request:\n\n{tool_context}"
+                "content": f"I have executed the following tools based on your request:\n\n{tool_context}\n\n{tool_instruction}"
             })
         
         try:
@@ -194,7 +195,16 @@ class ChatService:
             result = await llm_service.generate_response(user, session, messages)
             
             if result["success"]:
-                return result["content"]
+                llm_response = result["content"]
+                
+                # Validate response to prevent hallucination
+                if not LLMPrompts.validate_response_against_data(llm_response, tool_results):
+                    logger.warning("LLM response contains suspected hallucinated data, using fallback")
+                    return await self._generate_llm_response(
+                        message, tool_results, connected_servers, conversation_id
+                    )
+                
+                return llm_response
             else:
                 # Fallback to rule-based response if LLM fails
                 logger.warning(f"LLM generation failed: {result.get('error')}")
@@ -219,8 +229,9 @@ class ChatService:
         return LLMPrompts.get_system_prompt(connected_servers, tool_results)
     
     def _format_tool_results_for_llm(self, tool_results: List[Dict]) -> str:
-        """Format tool results for LLM context"""
+        """Format tool results for LLM context with ACTUAL data to prevent hallucination"""
         formatted_results = []
+        labels = LLMPrompts.get_data_labels()
         
         for result in tool_results:
             tool_name = result.get("tool_name", "Unknown")
@@ -228,21 +239,34 @@ class ChatService:
             success = result.get("success", False)
             
             if success:
-                # Extract useful data from the result
+                # Extract and include the ACTUAL data from the result
                 tool_result = result.get("result", {})
                 
                 if tool_result.get("result", {}).get("content"):
                     content_text = tool_result["result"]["content"][0].get("text", "")
                     try:
                         data = json.loads(content_text)
-                        formatted_results.append(f"✅ {tool_name} ({server_name}): Retrieved {len(data.get('leads', data.get('data', [])))} records")
-                    except:
-                        formatted_results.append(f"✅ {tool_name} ({server_name}): {content_text[:100]}...")
+                        
+                        # Include the ACTUAL DATA for the LLM to use
+                        if tool_name == "auto_authenticate":
+                            formatted_results.append(f"✅ {tool_name} ({server_name}): {labels['authentication_success']}")
+                        elif "leads" in data:
+                            leads = data["leads"]
+                            formatted_results.append(f"✅ {tool_name} ({server_name}): Retrieved {len(leads)} leads")
+                            formatted_results.append(f"{labels['leads_data']}\n{json.dumps(leads, indent=2)}")
+                        else:
+                            # Include raw data for other tool types
+                            formatted_results.append(f"✅ {tool_name} ({server_name}): Data retrieved")
+                            formatted_results.append(f"{labels['general_data']}\n{json.dumps(data, indent=2)}")
+                    except json.JSONDecodeError:
+                        # Include raw text if it's not JSON
+                        formatted_results.append(f"✅ {tool_name} ({server_name}): Data retrieved")
+                        formatted_results.append(f"{labels['general_data']}\n{content_text}")
                 else:
-                    formatted_results.append(f"✅ {tool_name} ({server_name}): Executed successfully")
+                    formatted_results.append(f"✅ {tool_name} ({server_name}): {labels['no_data_returned']}")
             else:
                 error_msg = result.get("result", {}).get("error", "Unknown error")
-                formatted_results.append(f"❌ {tool_name} ({server_name}): {error_msg}")
+                formatted_results.append(f"❌ {tool_name} ({server_name}): {labels['error_prefix']} {error_msg}")
         
         return "\n".join(formatted_results)
 
