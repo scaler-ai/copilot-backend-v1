@@ -1,10 +1,12 @@
 import json
 import logging
+import uuid
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from sqlmodel import Session, select
 
-from app.models import MCPServer, User
+from app.models import MCPServer, User, ChatConversation, ChatMessageDB
 from app.services.mcp_manager import mcp_manager
 
 
@@ -15,7 +17,7 @@ class ChatService:
     """Service for handling chat with LLM and MCP tool integration"""
     
     def __init__(self):
-        self.conversation_history: Dict[str, List[Dict]] = {}
+        self.conversation_history: Dict[str, List[Dict]] = {}  # Keep for backwards compatibility
     
     async def process_chat_message(
         self, 
@@ -55,8 +57,36 @@ class ChatService:
                 message, tool_results, connected_servers, conversation_id
             )
             
-            # Store conversation history
+            # Store conversation and messages in database
             if conversation_id:
+                # Create or get conversation
+                title = message[:50] + "..." if len(message) > 50 else message
+                self._get_or_create_conversation(conversation_id, user, session, title)
+                
+                # Store user message
+                self._store_message_to_db(
+                    conversation_id=conversation_id,
+                    message_type="user",
+                    content=message,
+                    session=session
+                )
+                
+                # Store AI response
+                servers_used = [result.get("server_name") for result in tool_results]
+                self._store_message_to_db(
+                    conversation_id=conversation_id,
+                    message_type="assistant",
+                    content=llm_response,
+                    session=session,
+                    tool_calls=tool_results,
+                    servers_used=servers_used,
+                    extra_metadata={
+                        "tool_analysis": tool_analysis,
+                        "connected_servers_count": len(connected_servers)
+                    }
+                )
+                
+                # Also store in memory for backwards compatibility
                 self._store_conversation_turn(
                     conversation_id, message, llm_response, tool_results
                 )
@@ -70,8 +100,36 @@ class ChatService:
             
         except Exception as e:
             logger.error(f"Error processing chat message: {e}")
+            
+            # Store error message in database if we have a conversation
+            error_message = f"I apologize, but I encountered an error processing your request: {str(e)}"
+            if conversation_id:
+                try:
+                    # Create conversation if it doesn't exist
+                    title = message[:50] + "..." if len(message) > 50 else message
+                    self._get_or_create_conversation(conversation_id, user, session, title)
+                    
+                    # Store user message if we haven't already
+                    self._store_message_to_db(
+                        conversation_id=conversation_id,
+                        message_type="user",
+                        content=message,
+                        session=session
+                    )
+                    
+                    # Store error message
+                    self._store_message_to_db(
+                        conversation_id=conversation_id,
+                        message_type="error",
+                        content=error_message,
+                        session=session,
+                        extra_metadata={"error": str(e), "error_type": type(e).__name__}
+                    )
+                except Exception as db_error:
+                    logger.error(f"Failed to store error message to database: {db_error}")
+            
             return {
-                "response": f"I apologize, but I encountered an error processing your request: {str(e)}",
+                "response": error_message,
                 "tool_calls": [],
                 "servers_used": [],
                 "conversation_id": conversation_id,
@@ -419,6 +477,148 @@ class ChatService:
         # Keep only last 20 turns to prevent memory bloat
         if len(self.conversation_history[conversation_id]) > 20:
             self.conversation_history[conversation_id] = self.conversation_history[conversation_id][-20:]
+
+    def _get_or_create_conversation(
+        self, 
+        conversation_id: str, 
+        user: User, 
+        session: Session,
+        title: Optional[str] = None
+    ) -> ChatConversation:
+        """Get existing conversation or create a new one"""
+        # Try to get existing conversation
+        statement = select(ChatConversation).where(
+            ChatConversation.id == conversation_id,
+            ChatConversation.owner_id == user.id
+        )
+        conversation = session.exec(statement).first()
+        
+        if not conversation:
+            # Create new conversation
+            conversation = ChatConversation(
+                id=conversation_id,
+                title=title,
+                owner_id=user.id
+            )
+            session.add(conversation)
+            session.commit()
+            session.refresh(conversation)
+            logger.info(f"Created new conversation: {conversation_id}")
+        
+        return conversation
+
+    def _store_message_to_db(
+        self,
+        conversation_id: str,
+        message_type: str,
+        content: str,
+        session: Session,
+        tool_calls: Optional[List[Dict]] = None,
+        servers_used: Optional[List[str]] = None,
+        extra_metadata: Optional[Dict] = None
+    ) -> ChatMessageDB:
+        """Store a message to the database"""
+        try:
+            message = ChatMessageDB(
+                conversation_id=conversation_id,
+                message_type=message_type,
+                content=content,
+                tool_calls=tool_calls,
+                servers_used=servers_used,
+                extra_metadata=extra_metadata or {}
+            )
+            session.add(message)
+            session.commit()
+            session.refresh(message)
+            
+            # Update conversation message count and timestamp
+            conversation = session.get(ChatConversation, conversation_id)
+            if conversation:
+                conversation.message_count += 1
+                conversation.updated_at = datetime.utcnow().isoformat()
+                session.add(conversation)
+                session.commit()
+            
+            logger.debug(f"Stored {message_type} message to conversation {conversation_id}")
+            return message
+            
+        except Exception as e:
+            logger.error(f"Failed to store message to database: {e}")
+            session.rollback()
+            raise
+
+    def get_conversation_messages(
+        self,
+        conversation_id: str,
+        user: User,
+        session: Session,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[ChatMessageDB]:
+        """Get messages from a conversation"""
+        # Verify user owns the conversation
+        conversation_statement = select(ChatConversation).where(
+            ChatConversation.id == conversation_id,
+            ChatConversation.owner_id == user.id
+        )
+        conversation = session.exec(conversation_statement).first()
+        
+        if not conversation:
+            return []
+        
+        # Get messages
+        messages_statement = (
+            select(ChatMessageDB)
+            .where(ChatMessageDB.conversation_id == conversation_id)
+            .order_by(ChatMessageDB.timestamp)
+            .offset(offset)
+            .limit(limit)
+        )
+        
+        return list(session.exec(messages_statement).all())
+
+    def get_user_conversations(
+        self,
+        user: User,
+        session: Session,
+        limit: int = 50,
+        offset: int = 0
+    ) -> List[ChatConversation]:
+        """Get all conversations for a user"""
+        statement = (
+            select(ChatConversation)
+            .where(ChatConversation.owner_id == user.id)
+            .order_by(ChatConversation.updated_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        
+        return list(session.exec(statement).all())
+
+    def delete_conversation(
+        self,
+        conversation_id: str,
+        user: User,
+        session: Session
+    ) -> bool:
+        """Delete a conversation and all its messages"""
+        try:
+            # Verify user owns the conversation
+            conversation = session.get(ChatConversation, conversation_id)
+            if not conversation or conversation.owner_id != user.id:
+                return False
+            
+            # Delete conversation (messages will be deleted via CASCADE)
+            session.delete(conversation)
+            session.commit()
+            
+            logger.info(f"Deleted conversation {conversation_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to delete conversation {conversation_id}: {e}")
+            session.rollback()
+            return False
 
 
 # Global chat service instance

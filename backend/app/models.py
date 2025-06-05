@@ -47,6 +47,7 @@ class User(UserBase, table=True):
     hashed_password: str
     items: list["Item"] = Relationship(back_populates="owner", cascade_delete=True)
     mcp_servers: list["MCPServer"] = Relationship(back_populates="owner", cascade_delete=True)
+    chat_conversations: list["ChatConversation"] = Relationship(back_populates="owner", cascade_delete=True)
 
 
 # Properties to return via API, id is always required
@@ -205,3 +206,60 @@ class ChatResponse(SQLModel):
     servers_used: list[str]
     conversation_id: str | None
     error: str | None = None
+
+
+# Database models for chat persistence
+class ChatConversation(SQLModel, table=True):
+    id: str = Field(primary_key=True)  # UUID as string
+    title: str | None = Field(default=None, max_length=255)
+    created_at: str = Field(default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat())
+    message_count: int = Field(default=0)
+    owner_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE")
+    owner: User | None = Relationship(back_populates="chat_conversations")
+
+
+class ChatMessageDB(SQLModel, table=True):
+    __tablename__ = "chat_message"
+    
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    conversation_id: str = Field(foreign_key="chatconversation.id", nullable=False, ondelete="CASCADE")
+    message_type: str = Field(max_length=20)  # 'user', 'assistant', 'error'
+    content: str = Field(max_length=10000)
+    timestamp: str = Field(default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat())
+    tool_calls: Any | None = Field(default=None, sa_column=Column(JSON))  # Store tool call results
+    servers_used: Any | None = Field(default=None, sa_column=Column(JSON))  # Store server names
+    extra_metadata: Any | None = Field(default=None, sa_column=Column(JSON))  # Additional metadata
+    
+    conversation: ChatConversation | None = Relationship()
+
+
+# Public models for API responses
+class ChatConversationPublic(SQLModel):
+    id: str
+    title: str | None
+    created_at: str
+    updated_at: str
+    message_count: int
+    owner_id: uuid.UUID
+
+
+class ChatMessagePublic(SQLModel):
+    id: uuid.UUID
+    conversation_id: str
+    message_type: str
+    content: str
+    timestamp: str
+    tool_calls: Any | None
+    servers_used: Any | None
+    extra_metadata: Any | None
+
+
+class ChatConversationsPublic(SQLModel):
+    data: list[ChatConversationPublic]
+    count: int
+
+
+class ChatMessagesPublic(SQLModel):
+    data: list[ChatMessagePublic]
+    count: int
