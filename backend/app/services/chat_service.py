@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from app.models import MCPServer, User, ChatConversation, ChatMessageDB
 from app.services.mcp_manager import mcp_manager
 from app.services.llm_service import llm_service
+from app.services.llm_prompts import LLMPrompts
 
 
 logger = logging.getLogger(__name__)
@@ -203,40 +204,19 @@ class ChatService:
                 
         except Exception as e:
             logger.error(f"LLM service error: {e}")
-            # Fallback to rule-based response
+            # Fallback to rule-based tool analysis when LLM is unavailable
+            logger.info("Attempting rule-based tool analysis as LLM fallback")
+            fallback_tools = await self._analyze_for_tools_fallback(message, connected_servers)
+            if fallback_tools:
+                tool_results = await self._execute_tools(fallback_tools)
+            
             return await self._generate_llm_response(
                 message, tool_results, connected_servers, conversation_id
             )
     
     def _build_system_prompt(self, connected_servers: List[Dict], tool_results: List[Dict]) -> str:
         """Build system prompt for the LLM"""
-        prompt = """You are an intelligent AI assistant that helps users interact with their connected MCP (Model Context Protocol) servers. You can access various tools and data sources to provide helpful responses.
-
-Your capabilities:
-- Analyze user requests and determine when to use specific tools
-- Execute tools through MCP servers to retrieve data
-- Provide clear, helpful responses based on tool results
-- Handle CRM operations, lead management, and other business workflows
-
-Guidelines:
-- Be conversational and helpful
-- When tool results are available, integrate them naturally into your response
-- Format data clearly (use bullet points, numbers, etc.)
-- If no tools were needed, provide general assistance
-- Always be honest about what you can and cannot do
-"""
-        
-        if connected_servers:
-            prompt += f"\n\nConnected MCP Servers ({len(connected_servers)}):\n"
-            for server in connected_servers:
-                prompt += f"- {server['name']}: {server.get('description', 'No description')}\n"
-                if server.get('tools'):
-                    prompt += f"  Available tools: {len(server['tools'])}\n"
-        
-        if tool_results:
-            prompt += f"\n\nTool execution results are available and should be used to provide a comprehensive response."
-        
-        return prompt
+        return LLMPrompts.get_system_prompt(connected_servers, tool_results)
     
     def _format_tool_results_for_llm(self, tool_results: List[Dict]) -> str:
         """Format tool results for LLM context"""
@@ -366,12 +346,10 @@ Guidelines:
         """
         message_lower = message.lower()
         
-        # Keywords that suggest CRM operations
-        crm_keywords = [
-            "lead", "leads", "crm", "customer", "customers", "contact", "contacts",
-            "prospect", "prospects", "sales", "pipeline", "activity", "call", "email",
-            "search", "find", "get", "show", "list", "recent", "latest", "assigned"
-        ]
+        # Get keywords from prompts configuration
+        patterns = LLMPrompts.get_fallback_patterns()
+        crm_keywords = (patterns["general_crm"] + patterns["crm_search"] + 
+                       patterns["crm_recent"] + patterns["crm_assigned"])
         
         # Check if message contains CRM-related keywords
         needs_crm = any(keyword in message_lower for keyword in crm_keywords)
@@ -500,7 +478,7 @@ Guidelines:
             try:
                 server_id = tool_spec["server_id"]
                 tool_name = tool_spec["tool_name"]
-                parameters = tool_spec.get("parameters", {})
+                parameters = tool_spec.get("arguments", tool_spec.get("parameters", {}))
                 
                 # If tool requires auth token, use stored token or get from previous auth
                 if tool_spec.get("requires_auth_token") and server_id in auth_tokens:
@@ -546,6 +524,100 @@ Guidelines:
         
         return results
     
+    async def _analyze_for_tools_fallback(self, message: str, connected_servers: List[Dict]) -> List[Dict]:
+        """
+        Fallback tool analysis when LLM is unavailable.
+        Uses rule-based pattern matching to identify tool calls.
+        """
+        tools_to_execute = []
+        message_lower = message.lower()
+        
+        # Find CRM servers
+        crm_servers = [s for s in connected_servers if 'crm' in s.get('name', '').lower()]
+        if not crm_servers:
+            return tools_to_execute
+        
+        crm_server = crm_servers[0]  # Use first CRM server
+        server_id = crm_server['id']
+        
+        # Add auto-authentication first
+        tools_to_execute.append({
+            "server_id": server_id,
+            "tool_name": "auto_authenticate",
+            "arguments": {}
+        })
+        
+        # Get patterns from prompts
+        patterns = LLMPrompts.get_fallback_patterns()
+        
+        # Search patterns
+        if any(word in message_lower for word in patterns["crm_search"]):
+            # Determine search type
+            if 'gmail' in message_lower or '@gmail.com' in message_lower:
+                # Search for Gmail leads
+                tools_to_execute.append({
+                    "server_id": server_id,
+                    "tool_name": "search_leads_simple",
+                    "arguments": {
+                        "query": "gmail",
+                        "limit": 10
+                    },
+                    "requires_auth_token": True
+                })
+            elif 'email' in message_lower and ('@' in message or 'com' in message_lower):
+                # Extract email domain or search term
+                email_terms = patterns["email_domains"]
+                for term in email_terms:
+                    if term in message_lower:
+                        tools_to_execute.append({
+                            "server_id": server_id,
+                            "tool_name": "search_leads_simple", 
+                            "arguments": {
+                                "query": term,
+                                "limit": 10
+                            },
+                            "requires_auth_token": True
+                        })
+                        break
+            else:
+                # General lead search - get recent leads
+                tools_to_execute.append({
+                    "server_id": server_id,
+                    "tool_name": "get_leads",
+                    "arguments": {
+                        "limit": 10,
+                        "sort_field": "CreatedOn",
+                        "sort_order": "desc"
+                    },
+                    "requires_auth_token": True
+                })
+        
+        # Recent/latest leads
+        elif any(word in message_lower for word in patterns["crm_recent"]):
+            tools_to_execute.append({
+                "server_id": server_id,
+                "tool_name": "get_leads",
+                "arguments": {
+                    "limit": 10,
+                    "sort_field": "CreatedOn", 
+                    "sort_order": "desc"
+                },
+                "requires_auth_token": True
+            })
+        
+        # My leads
+        elif any(word in message_lower for word in patterns["crm_assigned"]):
+            tools_to_execute.append({
+                "server_id": server_id,
+                "tool_name": "get_my_assigned_leads",
+                "arguments": {
+                    "limit": 10
+                },
+                "requires_auth_token": True
+            })
+        
+        return tools_to_execute
+
     async def _generate_llm_response(
         self, 
         message: str, 
@@ -562,13 +634,14 @@ Guidelines:
         
         if not tool_results:
             # No tools were called - provide general response
+            error_messages = LLMPrompts.get_error_messages()
             if any(keyword in message.lower() for keyword in ["lead", "crm", "customer"]):
                 if not connected_servers:
-                    return "I'd be happy to help with CRM operations, but you don't have any MCP servers connected. Please connect to your CRM server first."
+                    return error_messages["no_servers"]
                 else:
-                    return "I can help you with CRM operations. Please be more specific about what you'd like to do (e.g., 'show me recent leads', 'search for leads with gmail')."
+                    return error_messages["be_more_specific"]
             else:
-                return "Hello! I can help you interact with your connected MCP servers. I can access CRM data, search for leads, and perform various operations. What would you like to do?"
+                return error_messages["generic_help"]
         
         # Process tool results and generate response
         response_parts = []
