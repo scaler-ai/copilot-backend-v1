@@ -6,21 +6,20 @@ in generating appropriate responses. Separating them here makes it easy to modif
 and experiment with different prompts without changing the service logic.
 """
 
-from typing import Dict, List
 
 
 class LLMPrompts:
     """Container for LLM prompts and instructions"""
-    
+
     @staticmethod
-    def get_system_prompt(connected_servers: List[Dict], tool_results: List[Dict]) -> str:
+    def get_system_prompt(connected_servers: list[dict], tool_results: list[dict]) -> str:
         """
         Build system prompt for the LLM based on available servers and tool results.
-        
+
         Args:
             connected_servers: List of user's connected MCP servers
             tool_results: Results from any tool executions
-            
+
         Returns:
             Complete system prompt string
         """
@@ -46,7 +45,7 @@ Guidelines:
 - Format data clearly (use bullet points, numbers, etc.)
 - If no tools were needed, provide general assistance
 - Always be honest about what you can and cannot do"""
-        
+
         # Add server information
         if connected_servers:
             base_prompt += f"\n\nConnected MCP Servers ({len(connected_servers)}):\n"
@@ -54,22 +53,22 @@ Guidelines:
                 base_prompt += f"- {server['name']}: {server.get('description', 'No description')}\n"
                 if server.get('tools'):
                     base_prompt += f"  Available tools: {len(server['tools'])}\n"
-        
+
         # Add tool execution context
         if tool_results:
-            base_prompt += f"\n\nTool execution results are available and should be used to provide a comprehensive response.\n\nREMINDER: You must ONLY use the actual data provided in the tool results. Do NOT create fake data, names, emails, or any other details. If the data is missing or insufficient, say so clearly."
-        
+            base_prompt += "\n\nTool execution results are available and should be used to provide a comprehensive response.\n\nREMINDER: You must ONLY use the actual data provided in the tool results. Do NOT create fake data, names, emails, or any other details. If the data is missing or insufficient, say so clearly."
+
         return base_prompt
-    
+
     @staticmethod
-    def get_tool_analysis_prompt(message: str, available_tools: List[Dict]) -> str:
+    def get_tool_analysis_prompt(message: str, available_tools: list[dict]) -> str:
         """
         Build prompt for LLM to analyze if tools are needed for a user message.
-        
+
         Args:
             message: User's message
             available_tools: List of available tools from connected servers
-            
+
         Returns:
             Prompt for tool analysis
         """
@@ -109,18 +108,18 @@ Focus on the user's intent and choose the most appropriate tools to fulfill thei
 
     @staticmethod
     def get_response_generation_prompt(
-        message: str, 
-        tool_results: List[Dict], 
-        connected_servers: List[Dict]
+        message: str,
+        tool_results: list[dict],
+        connected_servers: list[dict]
     ) -> str:
         """
         Build prompt for generating the final response to the user.
-        
+
         Args:
             message: Original user message
             tool_results: Results from tool executions
             connected_servers: Available MCP servers
-            
+
         Returns:
             Prompt for response generation
         """
@@ -129,22 +128,22 @@ Focus on the user's intent and choose the most appropriate tools to fulfill thei
 User's original message: "{message}"
 
 Connected servers: {len(connected_servers)} MCP servers available"""
-        
+
         if tool_results:
-            prompt += f"\n\nTool execution results:\n"
+            prompt += "\n\nTool execution results:\n"
             for i, result in enumerate(tool_results, 1):
                 success = "✅" if result.get("success") else "❌"
                 tool_name = result.get("tool_name", "Unknown")
                 server_name = result.get("server_name", "Unknown")
                 prompt += f"{i}. {success} {tool_name} ({server_name})\n"
-                
+
                 if result.get("success") and result.get("result"):
                     # Add summary of successful results
                     prompt += f"   Result: {str(result['result'])[:200]}...\n"
                 elif not result.get("success"):
                     error = result.get("result", {}).get("error", "Unknown error")
                     prompt += f"   Error: {error}\n"
-        
+
         prompt += """
 
 Instructions:
@@ -156,29 +155,29 @@ Instructions:
 6. Keep the response focused and concise while being comprehensive
 
 Generate your response now:"""
-        
+
         return prompt
 
     @staticmethod
-    def _format_tools_list(tools: List[Dict]) -> str:
+    def _format_tools_list(tools: list[dict]) -> str:
         """Format list of tools for prompts"""
         if not tools:
             return "No tools available"
-        
+
         formatted = []
         for tool in tools:
             name = tool.get("name", "Unknown")
             description = tool.get("description", "No description")
             server = tool.get("server", "Unknown")
             formatted.append(f"- {name} ({server}): {description}")
-        
+
         return "\n".join(formatted)
 
     @staticmethod
-    def get_fallback_patterns() -> Dict[str, List[str]]:
+    def get_fallback_patterns() -> dict[str, list[str]]:
         """
         Get pattern matching rules for fallback tool selection when LLM is unavailable.
-        
+
         Returns:
             Dictionary mapping intent types to keyword patterns
         """
@@ -205,17 +204,17 @@ Generate your response now:"""
     def get_tool_results_instruction() -> str:
         """
         Get the instruction to append when providing tool results to LLM.
-        
+
         Returns:
             Instruction text for tool results context
         """
         return "IMPORTANT: Use ONLY the actual data shown above. Do NOT make up or invent any information."
 
     @staticmethod
-    def get_data_labels() -> Dict[str, str]:
+    def get_data_labels() -> dict[str, str]:
         """
         Get standardized labels for formatting tool results data.
-        
+
         Returns:
             Dictionary of data type labels
         """
@@ -228,14 +227,14 @@ Generate your response now:"""
         }
 
     @staticmethod
-    def validate_response_against_data(response: str, tool_results: List[Dict]) -> bool:
+    def validate_response_against_data(response: str, tool_results: list[dict]) -> bool:
         """
         Validate that the response doesn't contain hallucinated data.
-        
+
         Args:
             response: The LLM-generated response
             tool_results: The actual tool results that should be the source of truth
-            
+
         Returns:
             True if response seems valid, False if it likely contains hallucinated data
         """
@@ -245,13 +244,13 @@ Generate your response now:"""
             "ABC Corp", "XYZ LLC", "123 Industries", "789 Solutions", "DEF Inc",
             "@abccorp.com", "@xyzllc.com", "@123ind.com", "@789solutions.com", "@definc.com"
         ]
-        
+
         # Check if response contains common fake data patterns
         response_lower = response.lower()
         for pattern in suspicious_patterns:
             if pattern.lower() in response_lower:
                 return False
-        
+
         # If we have tool results with actual data, ensure response references real data
         if tool_results:
             has_real_data = False
@@ -259,18 +258,18 @@ Generate your response now:"""
                 if result.get("success") and result.get("result", {}).get("result", {}).get("content"):
                     has_real_data = True
                     break
-            
+
             # If we have real data but response contains generic examples, flag as suspicious
             if has_real_data and any(pattern in response_lower for pattern in ["lead #1", "lead #2", "example.com"]):
                 return False
-        
+
         return True
 
     @staticmethod
-    def get_error_messages() -> Dict[str, str]:
+    def get_error_messages() -> dict[str, str]:
         """
         Get standardized error messages for different scenarios.
-        
+
         Returns:
             Dictionary of error message templates
         """

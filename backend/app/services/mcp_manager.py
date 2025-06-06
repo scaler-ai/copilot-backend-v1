@@ -16,6 +16,7 @@ class MCPManager:
     def __init__(self):
         self.clients: dict[str, MCPClient] = {}
         self._lock = asyncio.Lock()
+        self._ws_manager = None  # Will be set later to avoid circular imports
 
     async def connect_server(self, server: MCPServer, session: Session) -> bool:
         """Connect to an MCP server"""
@@ -68,6 +69,9 @@ class MCPManager:
                     session.commit()
 
                     logger.info(f"Successfully connected to MCP server: {server.name}")
+
+                    # Notify WebSocket clients about successful connection
+                    await self._notify_server_status_change(server_id, "connected")
                     return True
                 else:
                     raise Exception("Failed to establish MCP connection")
@@ -80,6 +84,9 @@ class MCPManager:
                 server.error_message = str(e)
                 session.add(server)
                 session.commit()
+
+                # Notify WebSocket clients about connection error
+                await self._notify_server_status_change(server_id, "error", str(e))
 
                 # Clean up failed client
                 await self._cleanup_client(server_id)
@@ -109,6 +116,9 @@ class MCPManager:
                 session.commit()
 
                 logger.info(f"Disconnected from MCP server: {server.name}")
+
+                # Notify WebSocket clients about disconnection
+                await self._notify_server_status_change(server_id, "disconnected")
                 return True
 
             except Exception as e:
@@ -198,6 +208,24 @@ class MCPManager:
                 "prompt": prompt_name,
                 "arguments": arguments
             }
+
+    def set_websocket_manager(self, ws_manager):
+        """Set the WebSocket manager for real-time notifications"""
+        self._ws_manager = ws_manager
+
+    async def _notify_server_status_change(self, server_id: str, status: str, error: str | None = None):
+        """Notify WebSocket clients about server status changes"""
+        if self._ws_manager:
+            await self._ws_manager.broadcast_server_update(server_id, {
+                "status": status,
+                "connected": status == "connected",
+                "error": error
+            })
+
+    async def is_server_connected(self, server_id: str) -> bool:
+        """Check if a specific server is connected"""
+        client = self.clients.get(server_id)
+        return client is not None and client.is_connected()
 
     async def health_check(self) -> dict[str, any]:
         """Check health of all connected servers"""

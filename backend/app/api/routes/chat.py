@@ -5,13 +5,13 @@ from fastapi import APIRouter, HTTPException
 
 from app.api.deps import CurrentUser, SessionDep
 from app.models import (
-    ChatMessage, 
-    ChatResponse, 
-    ChatToolCall, 
-    ChatConversationsPublic,
-    ChatMessagesPublic,
     ChatConversationPublic,
-    ChatMessagePublic
+    ChatConversationsPublic,
+    ChatMessage,
+    ChatMessagePublic,
+    ChatMessagesPublic,
+    ChatResponse,
+    ChatToolCall,
 )
 from app.services.chat_service import chat_service
 
@@ -33,7 +33,7 @@ async def chat_with_llm(
         conversation_id = chat_message.conversation_id
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
-        
+
         # Process the chat message
         result = await chat_service.process_chat_message(
             user=current_user,
@@ -41,7 +41,7 @@ async def chat_with_llm(
             session=session,
             conversation_id=conversation_id
         )
-        
+
         # Convert tool results to ChatToolCall models
         tool_calls = []
         for tool_result in result.get("tool_calls", []):
@@ -53,7 +53,7 @@ async def chat_with_llm(
                 result=tool_result["result"],
                 success=tool_result["success"]
             ))
-        
+
         return ChatResponse(
             response=result["response"],
             tool_calls=tool_calls,
@@ -61,7 +61,7 @@ async def chat_with_llm(
             conversation_id=result["conversation_id"],
             error=result.get("error")
         )
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chat processing failed: {str(e)}")
 
@@ -87,7 +87,7 @@ async def get_chat_history(
             limit=limit,
             offset=offset
         )
-        
+
         # Convert to public models
         message_data = [
             ChatMessagePublic(
@@ -102,9 +102,9 @@ async def get_chat_history(
             )
             for msg in messages
         ]
-        
+
         return ChatMessagesPublic(data=message_data, count=len(message_data))
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get chat history: {str(e)}")
 
@@ -126,16 +126,16 @@ async def clear_chat_history(
             user=current_user,
             session=session
         )
-        
+
         if not success:
             raise HTTPException(status_code=404, detail="Conversation not found or not owned by user")
-        
+
         # Also clear from memory
         if conversation_id in chat_service.conversation_history:
             del chat_service.conversation_history[conversation_id]
-        
+
         return {"message": f"Chat conversation {conversation_id} deleted successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -161,7 +161,7 @@ async def list_conversations(
             limit=limit,
             offset=offset
         )
-        
+
         # Convert to public models
         conversation_data = [
             ChatConversationPublic(
@@ -174,8 +174,8 @@ async def list_conversations(
             )
             for conv in conversations
         ]
-        
+
         return ChatConversationsPublic(data=conversation_data, count=len(conversation_data))
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list conversations: {str(e)}")

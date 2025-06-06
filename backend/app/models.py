@@ -226,7 +226,7 @@ class ChatConversation(SQLModel, table=True):
 
 class ChatMessageDB(SQLModel, table=True):
     __tablename__ = "chat_message"
-    
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     conversation_id: str = Field(foreign_key="chatconversation.id", nullable=False, ondelete="CASCADE")
     message_type: str = Field(max_length=20)  # 'user', 'assistant', 'error'
@@ -235,7 +235,7 @@ class ChatMessageDB(SQLModel, table=True):
     tool_calls: Any | None = Field(default=None, sa_column=Column(JSON))  # Store tool call results
     servers_used: Any | None = Field(default=None, sa_column=Column(JSON))  # Store server names
     extra_metadata: Any | None = Field(default=None, sa_column=Column(JSON))  # Additional metadata
-    
+
     conversation: ChatConversation | None = Relationship()
 
 

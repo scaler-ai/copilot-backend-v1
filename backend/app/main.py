@@ -4,8 +4,8 @@ from contextlib import asynccontextmanager
 import sentry_sdk
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
-from starlette.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
+from starlette.middleware.cors import CORSMiddleware
 
 from app.api.main import api_router
 from app.core.config import settings
@@ -21,20 +21,20 @@ def custom_generate_unique_id(route: APIRoute) -> str:
 async def startup_mcp_connections():
     """
     Reconnect to enabled MCP servers on application startup.
-    This ensures that servers marked as "connected" in the database 
+    This ensures that servers marked as "connected" in the database
     are actually connected in the MCP manager.
     """
     logger = logging.getLogger(__name__)
     logger.info("Starting MCP server auto-reconnection...")
-    
+
     try:
         with Session(engine) as session:
             # Get all enabled MCP servers
-            statement = select(MCPServer).where(MCPServer.is_enabled == True)
+            statement = select(MCPServer).where(MCPServer.is_enabled is True)
             servers = session.exec(statement).all()
-            
+
             logger.info(f"Found {len(servers)} enabled MCP servers")
-            
+
             connected_count = 0
             for server in servers:
                 try:
@@ -43,26 +43,26 @@ async def startup_mcp_connections():
                     server.error_message = None
                     session.add(server)
                     session.commit()
-                    
+
                     # Attempt to connect
                     logger.info(f"Attempting to connect to MCP server: {server.name}")
                     success = await mcp_manager.connect_server(server, session)
-                    
+
                     if success:
                         connected_count += 1
                         logger.info(f"Successfully connected to MCP server: {server.name}")
                     else:
                         logger.warning(f"Failed to connect to MCP server: {server.name} - {server.error_message}")
-                        
+
                 except Exception as e:
                     logger.error(f"Error connecting to MCP server {server.name}: {e}")
                     server.status = "error"
                     server.error_message = str(e)
                     session.add(server)
                     session.commit()
-            
+
             logger.info(f"MCP startup complete: {connected_count}/{len(servers)} servers connected")
-            
+
     except Exception as e:
         logger.error(f"Error during MCP startup: {e}")
 
@@ -70,6 +70,10 @@ async def startup_mcp_connections():
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Startup
+    # Set up MCP WebSocket integration
+    from app.api.routes.mcp_ws import setup_mcp_websocket_integration
+    setup_mcp_websocket_integration()
+
     await startup_mcp_connections()
     yield
     # Shutdown

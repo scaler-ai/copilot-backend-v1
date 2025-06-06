@@ -1,4 +1,3 @@
-import uuid
 from datetime import datetime
 from typing import Any
 
@@ -8,12 +7,12 @@ from sqlmodel import select
 from app.api.deps import CurrentUser, SessionDep
 from app.core.encryption import encryption_service
 from app.models import (
-    LLMSettings,
-    LLMSettingsCreate,
-    LLMSettingsUpdate,
-    LLMSettingsPublic,
     LLMProvider,
     LLMProvidersResponse,
+    LLMSettings,
+    LLMSettingsCreate,
+    LLMSettingsPublic,
+    LLMSettingsUpdate,
     Message,
 )
 
@@ -27,7 +26,7 @@ SUPPORTED_PROVIDERS = [
         display_name="OpenAI",
         models=[
             "gpt-4o",
-            "gpt-4o-mini", 
+            "gpt-4o-mini",
             "gpt-4-turbo",
             "gpt-4",
             "gpt-3.5-turbo"
@@ -96,10 +95,10 @@ def get_llm_settings(
     """
     statement = select(LLMSettings).where(LLMSettings.owner_id == current_user.id)
     settings = session.exec(statement).first()
-    
+
     if not settings:
         return None
-    
+
     return LLMSettingsPublic(
         id=settings.id,
         provider=settings.provider,
@@ -123,13 +122,13 @@ def create_llm_settings(
     # Check if user already has settings
     existing_statement = select(LLMSettings).where(LLMSettings.owner_id == current_user.id)
     existing_settings = session.exec(existing_statement).first()
-    
+
     if existing_settings:
         raise HTTPException(
             status_code=400,
             detail="User already has LLM settings. Use PUT to update existing settings."
         )
-    
+
     # Validate provider and model
     provider_info = next((p for p in SUPPORTED_PROVIDERS if p.name == settings_in.provider), None)
     if not provider_info:
@@ -137,23 +136,23 @@ def create_llm_settings(
             status_code=400,
             detail=f"Unsupported provider: {settings_in.provider}"
         )
-    
+
     if settings_in.model not in provider_info.models:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported model {settings_in.model} for provider {settings_in.provider}"
         )
-    
+
     # Validate max_tokens against provider limit
     if settings_in.max_tokens > provider_info.max_tokens_limit:
         raise HTTPException(
             status_code=400,
             detail=f"max_tokens ({settings_in.max_tokens}) exceeds provider limit ({provider_info.max_tokens_limit})"
         )
-    
+
     # Encrypt API key
     encrypted_api_key = encryption_service.encrypt(settings_in.api_key)
-    
+
     # Create settings
     db_settings = LLMSettings(
         provider=settings_in.provider,
@@ -164,11 +163,11 @@ def create_llm_settings(
         encrypted_api_key=encrypted_api_key,
         owner_id=current_user.id
     )
-    
+
     session.add(db_settings)
     session.commit()
     session.refresh(db_settings)
-    
+
     return LLMSettingsPublic(
         id=db_settings.id,
         provider=db_settings.provider,
@@ -191,10 +190,10 @@ def update_llm_settings(
     """
     statement = select(LLMSettings).where(LLMSettings.owner_id == current_user.id)
     db_settings = session.exec(statement).first()
-    
+
     if not db_settings:
         raise HTTPException(status_code=404, detail="LLM settings not found")
-    
+
     # Validate provider and model if being updated
     if settings_in.provider:
         provider_info = next((p for p in SUPPORTED_PROVIDERS if p.name == settings_in.provider), None)
@@ -203,7 +202,7 @@ def update_llm_settings(
                 status_code=400,
                 detail=f"Unsupported provider: {settings_in.provider}"
             )
-        
+
         # If model is also being updated, validate it against the new provider
         model_to_check = settings_in.model or db_settings.model
         if model_to_check not in provider_info.models:
@@ -211,7 +210,7 @@ def update_llm_settings(
                 status_code=400,
                 detail=f"Unsupported model {model_to_check} for provider {settings_in.provider}"
             )
-        
+
         # Validate max_tokens against new provider if provided
         max_tokens_to_check = settings_in.max_tokens or db_settings.max_tokens
         if max_tokens_to_check > provider_info.max_tokens_limit:
@@ -219,7 +218,7 @@ def update_llm_settings(
                 status_code=400,
                 detail=f"max_tokens ({max_tokens_to_check}) exceeds provider limit ({provider_info.max_tokens_limit})"
             )
-    
+
     elif settings_in.model:
         # Model is being updated but not provider, validate against current provider
         current_provider_info = next((p for p in SUPPORTED_PROVIDERS if p.name == db_settings.provider), None)
@@ -228,27 +227,27 @@ def update_llm_settings(
                 status_code=400,
                 detail=f"Unsupported model {settings_in.model} for provider {db_settings.provider}"
             )
-    
+
     # Update fields
     update_data = settings_in.model_dump(exclude_unset=True)
-    
+
     # Handle API key encryption
     if "api_key" in update_data:
         encrypted_api_key = encryption_service.encrypt(update_data["api_key"])
         update_data["encrypted_api_key"] = encrypted_api_key
         del update_data["api_key"]
-    
+
     # Update timestamp
     update_data["updated_at"] = datetime.utcnow().isoformat()
-    
+
     # Apply updates
     for field, value in update_data.items():
         setattr(db_settings, field, value)
-    
+
     session.add(db_settings)
     session.commit()
     session.refresh(db_settings)
-    
+
     return LLMSettingsPublic(
         id=db_settings.id,
         provider=db_settings.provider,
@@ -271,13 +270,13 @@ def delete_llm_settings(
     """
     statement = select(LLMSettings).where(LLMSettings.owner_id == current_user.id)
     db_settings = session.exec(statement).first()
-    
+
     if not db_settings:
         raise HTTPException(status_code=404, detail="LLM settings not found")
-    
+
     session.delete(db_settings)
     session.commit()
-    
+
     return Message(message="LLM settings deleted successfully")
 
 
@@ -290,27 +289,27 @@ def test_llm_settings(
     """
     statement = select(LLMSettings).where(LLMSettings.owner_id == current_user.id)
     db_settings = session.exec(statement).first()
-    
+
     if not db_settings:
         raise HTTPException(status_code=404, detail="LLM settings not found")
-    
+
     if not db_settings.is_active:
         raise HTTPException(status_code=400, detail="LLM settings are disabled")
-    
+
     try:
         # Decrypt API key for testing
-        api_key = encryption_service.decrypt(db_settings.encrypted_api_key)
-        
+        encryption_service.decrypt(db_settings.encrypted_api_key)
+
         # This is a placeholder for actual LLM API testing
         # In the actual implementation, we would make a real API call here
-        
+
         return {
             "success": True,
             "message": f"LLM settings for {db_settings.provider} ({db_settings.model}) are configured correctly",
             "provider": db_settings.provider,
             "model": db_settings.model
         }
-    
+
     except Exception as e:
         return {
             "success": False,
