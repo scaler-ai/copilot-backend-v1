@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -908,6 +909,312 @@ class ChatService:
             logger.error(f"Failed to delete conversation {conversation_id}: {e}")
             session.rollback()
             return False
+
+    async def process_chat_message_streaming(
+        self,
+        user: User,
+        message: str,
+        session: Session,
+        conversation_id: str,
+        message_id: str,
+        ws_manager: Any,
+        conversation_id_param: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Process a chat message with real-time streaming response
+
+        Args:
+            user: Current user
+            message: User's message
+            session: Database session
+            conversation_id: Conversation ID for this chat
+            message_id: Unique ID for this response message
+            ws_manager: WebSocket manager for streaming
+            conversation_id_param: Optional conversation ID override
+
+        Returns:
+            Dict with response and any tool call results
+        """
+        try:
+            # Get user's connected MCP servers
+            connected_servers = await self._get_user_connected_servers(user, session)
+
+            # Analyze message for potential tool calls using LLM
+            tool_analysis = await llm_service.analyze_for_tools(
+                user, session, message, self._format_tools_for_analysis(connected_servers)
+            )
+
+            # Execute any identified tools with real-time notifications
+            tool_results = []
+            if tool_analysis.get("requires_tools"):
+                execution_tools = await self._prepare_tools_for_execution(
+                    tool_analysis["tools"], connected_servers, user, session
+                )
+                if execution_tools:
+                    tool_results = await self._execute_tools_with_streaming(
+                        execution_tools, user, session, conversation_id, ws_manager
+                    )
+
+            # Generate and stream LLM response
+            llm_response = await self._generate_and_stream_llm_response(
+                user, session, message, tool_results, connected_servers,
+                conversation_id, message_id, ws_manager
+            )
+
+            # Store conversation and messages in database
+            # Create or get conversation
+            title = message[:50] + "..." if len(message) > 50 else message
+            self._get_or_create_conversation(conversation_id, user, session, title)
+
+            # Store user message
+            self._store_message_to_db(
+                conversation_id=conversation_id,
+                message_type="user",
+                content=message,
+                session=session
+            )
+
+            # Store AI response
+            servers_used = [result.get("server_name") for result in tool_results]
+            self._store_message_to_db(
+                conversation_id=conversation_id,
+                message_type="assistant",
+                content=llm_response,
+                session=session,
+                tool_calls=tool_results,
+                servers_used=servers_used,
+                extra_metadata={
+                    "tool_analysis": tool_analysis,
+                    "connected_servers_count": len(connected_servers),
+                    "streamed": True,
+                    "message_id": message_id
+                }
+            )
+
+            return {
+                "response": llm_response,
+                "tool_calls": tool_results,
+                "servers_used": servers_used,
+                "conversation_id": conversation_id,
+                "message_id": message_id
+            }
+
+        except Exception as e:
+            logger.error(f"Error processing streaming chat message: {e}")
+
+            # Send error through WebSocket
+            await ws_manager.send_error(
+                str(user.id),
+                f"I apologize, but I encountered an error processing your request: {str(e)}",
+                conversation_id
+            )
+
+            return {
+                "response": f"Error: {str(e)}",
+                "tool_calls": [],
+                "servers_used": [],
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "error": str(e)
+            }
+
+    async def _execute_tools_with_streaming(
+        self,
+        tools: list[dict],
+        user: User,
+        session: Session,
+        conversation_id: str,
+        ws_manager: Any
+    ) -> list[dict]:
+        """Execute MCP tools with real-time streaming notifications"""
+        results = []
+        auth_tokens = {}  # Store auth tokens by server
+
+        for tool_spec in tools:
+            try:
+                server_id = tool_spec["server_id"]
+                tool_name = tool_spec["tool_name"]
+                server_name = tool_spec["server_name"]
+                parameters = tool_spec.get("arguments", tool_spec.get("parameters", {}))
+
+                # Notify tool execution start
+                await ws_manager.send_tool_execution_start(
+                    str(user.id), conversation_id, tool_name, server_name
+                )
+
+                # If tool requires auth token, use stored token
+                if tool_spec.get("requires_auth_token") and server_id in auth_tokens:
+                    parameters["token"] = auth_tokens[server_id]
+
+                # Execute tool
+                result = await mcp_manager.call_tool(
+                    server_id, tool_name, parameters
+                )
+
+                # Store auth token if this was an authentication call
+                if tool_name == "auto_authenticate" and result.get("success"):
+                    try:
+                        auth_response = result.get("result", {})
+                        if auth_response.get("content"):
+                            content_text = auth_response["content"][0].get("text", "")
+                            auth_data = json.loads(content_text)
+                            if auth_data.get("token"):
+                                auth_tokens[server_id] = auth_data["token"]
+                    except Exception as e:
+                        logger.warning(f"Failed to extract auth token: {e}")
+
+                # Notify tool execution completion
+                await ws_manager.send_tool_execution_complete(
+                    str(user.id), conversation_id, tool_name,
+                    result.get("success", False), result
+                )
+
+                results.append({
+                    "server_id": server_id,
+                    "server_name": server_name,
+                    "tool_name": tool_name,
+                    "parameters": parameters,
+                    "result": result,
+                    "success": result.get("success", False)
+                })
+
+            except Exception as e:
+                logger.error(f"Error executing tool {tool_name}: {e}")
+
+                # Notify tool execution failure
+                await ws_manager.send_tool_execution_complete(
+                    str(user.id), conversation_id, tool_name, False, {"error": str(e)}
+                )
+
+                results.append({
+                    "server_id": tool_spec["server_id"],
+                    "server_name": tool_spec["server_name"],
+                    "tool_name": tool_name,
+                    "parameters": parameters,
+                    "result": {"error": str(e)},
+                    "success": False
+                })
+
+        return results
+
+    async def _generate_and_stream_llm_response(
+        self,
+        user: User,
+        session: Session,
+        message: str,
+        tool_results: list[dict],
+        connected_servers: list[dict],
+        conversation_id: str,
+        message_id: str,
+        ws_manager: Any
+    ) -> str:
+        """Generate LLM response and stream it word by word"""
+
+        try:
+            # Try using LLM service first
+            messages = [
+                {
+                    "role": "system",
+                    "content": self._build_system_prompt(connected_servers, tool_results)
+                },
+                {
+                    "role": "user",
+                    "content": message
+                }
+            ]
+
+            # Add tool results context if available
+            if tool_results:
+                tool_context = self._format_tool_results_for_llm(tool_results)
+                tool_instruction = LLMPrompts.get_tool_results_instruction()
+                messages.insert(-1, {
+                    "role": "assistant",
+                    "content": f"I have executed the following tools based on your request:\n\n{tool_context}\n\n{tool_instruction}"
+                })
+
+            # Try to get streaming response from LLM service
+            try:
+                result = await llm_service.generate_response(user, session, messages)
+
+                if result["success"]:
+                    # Stream the response word by word
+                    full_response = result["content"]
+                    await self._stream_response_text(
+                        full_response, str(user.id), conversation_id, message_id, ws_manager
+                    )
+                    return full_response
+                else:
+                    logger.warning(f"LLM generation failed: {result.get('error')}")
+
+            except Exception as e:
+                logger.error(f"LLM service error: {e}")
+
+            # Fallback to rule-based response
+            fallback_response = await self._generate_llm_response(
+                message, tool_results, connected_servers, conversation_id
+            )
+
+            # Stream the fallback response
+            await self._stream_response_text(
+                fallback_response, str(user.id), conversation_id, message_id, ws_manager
+            )
+
+            return fallback_response
+
+        except Exception as e:
+            logger.error(f"Error generating streaming response: {e}")
+            error_response = f"I apologize, but I encountered an error generating the response: {str(e)}"
+
+            # Stream the error response
+            await self._stream_response_text(
+                error_response, str(user.id), conversation_id, message_id, ws_manager
+            )
+
+            return error_response
+
+    async def _stream_response_text(
+        self,
+        text: str,
+        user_id: str,
+        conversation_id: str,
+        message_id: str,
+        ws_manager: Any,
+        chunk_size: int = 3,
+        delay_ms: int = 50
+    ):
+        """Stream text response word by word"""
+        try:
+            words = text.split()
+            current_chunk = []
+
+            for i, word in enumerate(words):
+                # Check if streaming should continue
+                user_session = ws_manager.user_sessions.get(user_id, {})
+                if not user_session.get("streaming", True):
+                    logger.info(f"Streaming stopped by user {user_id}")
+                    break
+
+                current_chunk.append(word)
+
+                # Send chunk when we have enough words or at the end
+                if len(current_chunk) >= chunk_size or i == len(words) - 1:
+                    chunk_text = " ".join(current_chunk) + " "
+
+                    success = await ws_manager.stream_response_chunk(
+                        user_id, chunk_text, conversation_id, message_id
+                    )
+
+                    if not success:
+                        logger.warning(f"Failed to stream chunk to user {user_id}")
+                        break
+
+                    current_chunk = []
+
+                    # Add delay for natural typing effect
+                    await asyncio.sleep(delay_ms / 1000.0)
+
+        except Exception as e:
+            logger.error(f"Error streaming response text: {e}")
 
 
 # Global chat service instance

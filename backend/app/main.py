@@ -6,6 +6,9 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from sqlmodel import Session, select
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 from app.api.main import api_router
 from app.core.config import settings
@@ -16,6 +19,36 @@ from app.services.mcp_manager import mcp_manager
 
 def custom_generate_unique_id(route: APIRoute) -> str:
     return f"{route.tags[0]}-{route.name}"
+
+
+class WebSocketCORSMiddleware(BaseHTTPMiddleware):
+    """
+    Custom middleware to handle WebSocket CORS.
+    The standard CORS middleware doesn't handle WebSocket upgrade requests properly.
+    """
+    async def dispatch(self, request: Request, call_next):
+        logger = logging.getLogger(__name__)
+        
+        # Check if this is a WebSocket upgrade request
+        if request.headers.get("upgrade") == "websocket":
+            # For WebSocket, we need to check the origin manually
+            origin = request.headers.get("origin")
+            logger.info(f"WebSocket request from origin: {origin}")
+            logger.info(f"WebSocket path: {request.url.path}")
+            logger.info(f"Allowed origins: {settings.all_cors_origins}")
+            
+            if origin and origin in settings.all_cors_origins:
+                # Origin is allowed, proceed with the request
+                logger.info(f"WebSocket origin {origin} is allowed")
+                response = await call_next(request)
+                return response
+            else:
+                # Origin not allowed or not present
+                logger.warning(f"WebSocket origin {origin} is not allowed or missing")
+                return Response(content="Origin not allowed", status_code=403)
+        
+        # For non-WebSocket requests, proceed normally
+        return await call_next(request)
 
 
 async def startup_mcp_connections():
@@ -100,5 +133,9 @@ if settings.all_cors_origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+# Add WebSocket CORS middleware AFTER the standard CORS middleware
+# Due to middleware execution order in Starlette (reverse order), this will run first
+app.add_middleware(WebSocketCORSMiddleware)
 
 app.include_router(api_router, prefix=settings.API_V1_STR)

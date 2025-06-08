@@ -341,7 +341,7 @@ class LLMService:
         """Get user's LLM settings"""
         statement = select(LLMSettings).where(
             LLMSettings.owner_id == user.id,
-            LLMSettings.is_active is True
+            LLMSettings.is_active == True
         )
         return session.exec(statement).first()
 

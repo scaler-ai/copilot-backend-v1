@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from typing import Any, Optional
 
 from pydantic import EmailStr
@@ -49,6 +50,7 @@ class User(UserBase, table=True):
     mcp_servers: list["MCPServer"] = Relationship(back_populates="owner", cascade_delete=True)
     chat_conversations: list["ChatConversation"] = Relationship(back_populates="owner", cascade_delete=True)
     llm_settings: Optional["LLMSettings"] = Relationship(back_populates="owner", cascade_delete=True, sa_relationship_kwargs={"uselist": False})
+    github_oauth: Optional["GitHubOAuth"] = Relationship(back_populates="owner", cascade_delete=True, sa_relationship_kwargs={"uselist": False})
 
 
 # Properties to return via API, id is always required
@@ -217,8 +219,8 @@ class ChatResponse(SQLModel):
 class ChatConversation(SQLModel, table=True):
     id: str = Field(primary_key=True)  # UUID as string
     title: str | None = Field(default=None, max_length=255)
-    created_at: str = Field(default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat())
-    updated_at: str = Field(default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     message_count: int = Field(default=0)
     owner_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE")
     owner: User | None = Relationship(back_populates="chat_conversations")
@@ -296,8 +298,8 @@ class LLMSettingsUpdate(SQLModel):
 class LLMSettings(LLMSettingsBase, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     encrypted_api_key: str = Field(max_length=1000)  # Encrypted API key
-    created_at: str = Field(default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat())
-    updated_at: str = Field(default_factory=lambda: __import__('datetime').datetime.utcnow().isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     owner_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE", unique=True)
     owner: User | None = Relationship(back_populates="llm_settings")
 
@@ -323,3 +325,64 @@ class LLMProvider(SQLModel):
 
 class LLMProvidersResponse(SQLModel):
     providers: list[LLMProvider]
+
+
+# GitHub OAuth Integration Models
+class GitHubOAuthBase(SQLModel):
+    github_username: str = Field(max_length=255)
+    avatar_url: str | None = Field(default=None, max_length=500)
+    email: str | None = Field(default=None, max_length=255)
+    name: str | None = Field(default=None, max_length=255)
+    company: str | None = Field(default=None, max_length=255)
+    location: str | None = Field(default=None, max_length=255)
+    bio: str | None = Field(default=None, max_length=1000)
+    public_repos: int | None = Field(default=None)
+    followers: int | None = Field(default=None)
+    following: int | None = Field(default=None)
+    scopes: str = Field(max_length=500)  # Comma-separated list of granted scopes
+    is_active: bool = Field(default=True)
+
+
+# Database model
+class GitHubOAuth(GitHubOAuthBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    github_id: int = Field(unique=True, index=True)  # GitHub user ID
+    encrypted_access_token: str = Field(max_length=1000)  # Encrypted OAuth token
+    token_expires_at: str | None = Field(default=None)  # When token expires (if applicable)
+    refresh_token: str | None = Field(default=None, max_length=1000)  # For token refresh
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_sync_at: str | None = Field(default=None)  # Last time we synced with GitHub
+    owner_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE", unique=True)
+    owner: User | None = Relationship(back_populates="github_oauth")
+
+
+# Public model for API responses (excludes tokens)
+class GitHubOAuthPublic(GitHubOAuthBase):
+    id: uuid.UUID
+    github_id: int
+    created_at: str
+    updated_at: str
+    last_sync_at: str | None
+    owner_id: uuid.UUID
+    # Note: Access tokens are never included in public responses
+
+
+# Request/Response models for OAuth flow
+class GitHubOAuthCallback(SQLModel):
+    code: str = Field(min_length=1)
+    state: str | None = Field(default=None)
+
+
+class GitHubOAuthResponse(SQLModel):
+    success: bool
+    message: str
+    github_oauth: GitHubOAuthPublic | None = Field(default=None)
+
+
+class GitHubOAuthSettings(SQLModel):
+    """Settings for GitHub OAuth integration"""
+    client_id: str = Field(min_length=1, max_length=100)
+    client_secret: str = Field(min_length=1, max_length=100)
+    redirect_uri: str = Field(min_length=1, max_length=500)
+    scopes: list[str] = Field(default=["repo", "read:user", "user:email", "read:org", "read:discussion", "read:project"])
