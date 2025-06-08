@@ -3,7 +3,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     chat,
     chat_ws,
-    github_oauth,
+    github_oauth_working as github_oauth,
     items,
     llm_settings,
     login,

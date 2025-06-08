@@ -682,6 +682,12 @@ class GitHubContributor(GitHubContributorBase, table=True):
     
     # Repository contributions
     repository_contributions: list["GitHubRepositoryContribution"] = Relationship(back_populates="contributor", cascade_delete=True)
+    
+    # Enhanced activity tracking
+    activities: list["GitHubActivity"] = Relationship(back_populates="contributor", cascade_delete=True)
+    pull_requests: list["GitHubPullRequest"] = Relationship(back_populates="contributor", cascade_delete=True)
+    issue_activities: list["GitHubIssueActivity"] = Relationship(back_populates="contributor", cascade_delete=True)
+    skill_analyses: list["ContributorAnalysis"] = Relationship(back_populates="contributor", cascade_delete=True)
 
 
 class GitHubContributorPublic(GitHubContributorBase):
@@ -754,3 +760,230 @@ class GitHubOrganizationAnalytics(SQLModel):
     language_distribution: dict[str, int]
     contribution_trends: dict[str, Any]
     activity_summary: dict[str, int]
+
+
+# Enhanced GitHub Activity Models for Skill Analysis
+
+# Base models for GitHub activities
+class GitHubActivityBase(SQLModel):
+    activity_type: str = Field(max_length=100)  # pr_created, pr_reviewed, issue_created, comment_left, commit_made
+    repository_name: str = Field(max_length=255, index=True)
+    repository_url: str = Field(max_length=500)
+    title: str = Field(max_length=500)
+    description: str | None = Field(default=None, max_length=2000)
+    programming_languages: str | None = Field(default=None, max_length=500)  # JSON string of languages
+    complexity_indicators: str | None = Field(default=None, max_length=1000)  # JSON string of complexity metrics
+    github_created_at: str  # When the activity was created on GitHub
+    github_url: str = Field(max_length=500)
+
+
+class GitHubActivity(GitHubActivityBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    github_activity_id: str = Field(max_length=255, index=True)  # GitHub's unique ID for the activity
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Contributor relationship
+    contributor_id: uuid.UUID = Field(foreign_key="githubcontributor.id", nullable=False, ondelete="CASCADE")
+    contributor: GitHubContributor | None = Relationship(back_populates="activities")
+
+
+class GitHubActivityPublic(GitHubActivityBase):
+    id: uuid.UUID
+    github_activity_id: str
+    created_at: str
+    updated_at: str
+
+
+# Enhanced Pull Request model
+class GitHubPullRequestBase(SQLModel):
+    github_pr_id: int = Field(index=True)
+    repository_name: str = Field(max_length=255, index=True)
+    repository_url: str = Field(max_length=500)
+    title: str = Field(max_length=500)
+    description: str | None = Field(default=None, max_length=2000)
+    state: str = Field(max_length=50)  # open, closed, merged
+    additions: int = Field(default=0)
+    deletions: int = Field(default=0)
+    changed_files: int = Field(default=0)
+    programming_languages: str | None = Field(default=None, max_length=500)  # JSON string
+    code_complexity_score: int | None = Field(default=None, ge=1, le=100)
+    review_comments_received: int = Field(default=0)
+    review_comments_given: int = Field(default=0)
+    commits_count: int = Field(default=0)
+    is_draft: bool = Field(default=False)
+    merged_at: str | None = Field(default=None)
+    closed_at: str | None = Field(default=None)
+    github_created_at: str
+    github_updated_at: str
+
+
+class GitHubPullRequest(GitHubPullRequestBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Contributor relationship
+    contributor_id: uuid.UUID = Field(foreign_key="githubcontributor.id", nullable=False, ondelete="CASCADE")
+    contributor: GitHubContributor | None = Relationship(back_populates="pull_requests")
+    
+    # Reviews relationship
+    reviews_received: list["GitHubCodeReview"] = Relationship(back_populates="pull_request")
+
+
+class GitHubPullRequestPublic(GitHubPullRequestBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+
+
+# Code Review model
+class GitHubCodeReviewBase(SQLModel):
+    github_review_id: int | None = Field(default=None, index=True)
+    review_type: str = Field(max_length=50)  # approve, request_changes, comment, dismiss
+    comment_count: int = Field(default=0)
+    technical_depth_score: int | None = Field(default=None, ge=1, le=100)
+    review_quality_indicators: str | None = Field(default=None, max_length=1000)  # JSON string
+    github_submitted_at: str
+
+
+class GitHubCodeReview(GitHubCodeReviewBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Relationships
+    reviewer_id: uuid.UUID = Field(foreign_key="githubcontributor.id", nullable=False, ondelete="CASCADE")
+    reviewer: GitHubContributor | None = Relationship()
+    
+    pull_request_id: uuid.UUID = Field(foreign_key="githubpullrequest.id", nullable=False, ondelete="CASCADE")
+    pull_request: GitHubPullRequest | None = Relationship(back_populates="reviews_received")
+
+
+class GitHubCodeReviewPublic(GitHubCodeReviewBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+
+
+# Issue Activity model
+class GitHubIssueActivityBase(SQLModel):
+    github_issue_id: int = Field(index=True)
+    repository_name: str = Field(max_length=255, index=True)
+    repository_url: str = Field(max_length=500)
+    issue_title: str = Field(max_length=500)
+    issue_description: str | None = Field(default=None, max_length=2000)
+    activity_type: str = Field(max_length=50)  # created, commented, closed, assigned
+    comment_content: str | None = Field(default=None, max_length=2000)
+    labels: str | None = Field(default=None, max_length=500)  # JSON string of issue labels
+    is_bug: bool = Field(default=False)
+    is_enhancement: bool = Field(default=False)
+    github_created_at: str
+
+
+class GitHubIssueActivity(GitHubIssueActivityBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Contributor relationship
+    contributor_id: uuid.UUID = Field(foreign_key="githubcontributor.id", nullable=False, ondelete="CASCADE")
+    contributor: GitHubContributor | None = Relationship(back_populates="issue_activities")
+
+
+class GitHubIssueActivityPublic(GitHubIssueActivityBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+
+
+# Skill Analysis Models
+class ContributorAnalysisBase(SQLModel):
+    technical_summary: str = Field(max_length=5000)  # LLM-generated summary
+    skill_inferences: str = Field(max_length=5000)  # JSON string of inferred skills
+    career_level_assessment: str = Field(max_length=2000)  # LLM assessment of career level
+    strengths: str | None = Field(default=None, max_length=2000)  # JSON string
+    improvement_areas: str | None = Field(default=None, max_length=2000)  # JSON string
+    confidence_score: int = Field(default=50, ge=1, le=100)  # Overall confidence in analysis
+    analysis_period_months: int = Field(default=12)  # Period analyzed
+    total_activities_analyzed: int = Field(default=0)
+
+
+class ContributorAnalysis(ContributorAnalysisBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Contributor relationship
+    contributor_id: uuid.UUID = Field(foreign_key="githubcontributor.id", nullable=False, ondelete="CASCADE")
+    contributor: GitHubContributor | None = Relationship(back_populates="skill_analyses")
+    
+    # User who requested the analysis
+    generated_by_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE")
+    generated_by: User | None = Relationship()
+
+
+class ContributorAnalysisPublic(ContributorAnalysisBase):
+    id: uuid.UUID
+    generated_at: str
+    updated_at: str
+
+
+# Skill Rating from GitHub Analysis
+class GitHubSkillRatingBase(SQLModel):
+    skill_id: str = Field(max_length=255, index=True)
+    skill_name: str = Field(max_length=255)
+    inferred_level: int = Field(ge=1, le=7)  # SFIA levels 1-7
+    confidence_score: int = Field(ge=1, le=100)
+    evidence_summary: str = Field(max_length=2000)
+    github_evidence_count: int = Field(default=0)  # Number of GitHub activities supporting this rating
+    recommended_next_level: int | None = Field(default=None, ge=1, le=7)
+    improvement_suggestions: str | None = Field(default=None, max_length=1000)
+
+
+class GitHubSkillRating(GitHubSkillRatingBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Analysis relationship
+    analysis_id: uuid.UUID = Field(foreign_key="contributoranalysis.id", nullable=False, ondelete="CASCADE")
+    analysis: ContributorAnalysis | None = Relationship()
+
+
+class GitHubSkillRatingPublic(GitHubSkillRatingBase):
+    id: uuid.UUID
+    generated_at: str
+
+
+# Response models for GitHub skill analysis APIs
+class GitHubSkillAnalysisResponse(SQLModel):
+    overall_assessment: str
+    skill_ratings: list[GitHubSkillRatingPublic]
+    strengths: list[str]
+    growth_areas: list[str]
+    learning_recommendations: list[str]
+    next_level_requirements: list[str]
+    confidence_score: int
+    last_updated: str
+
+
+class ContributorDetailedActivityResponse(SQLModel):
+    contributor: GitHubContributorPublic
+    activities: list[GitHubActivityPublic]
+    pull_requests: list[GitHubPullRequestPublic]
+    code_reviews: list[GitHubCodeReviewPublic]
+    issue_activities: list[GitHubIssueActivityPublic]
+    activity_summary: dict[str, Any]
+    period_analyzed: str
+    total_activities: int
+
+
+class SkillProgressResponse(SQLModel):
+    skill_id: str
+    skill_name: str
+    current_level: int
+    target_level: int
+    progress_percentage: float
+    recent_evidence: list[str]
+    recommended_actions: list[str]
+    estimated_timeline: str

@@ -229,7 +229,7 @@ class SkillTaxonomyService:
         taxonomy = self.load_taxonomy()
         return taxonomy.get('skill_levels', {})
     
-    def validate_skill_level(self, skill_id: str, level: str) -> bool:
+    def validate_skill_level(self, skill_id: str, level: str | int) -> bool:
         """Validate if a skill supports a specific level"""
         skill = self.get_skill_by_id(skill_id)
         if not skill:
@@ -239,16 +239,20 @@ class SkillTaxonomyService:
         
         # Handle both SFIA numeric levels (1-7) and text levels (beginner, etc.)
         if isinstance(level, str):
-            # Convert text levels to SFIA levels if using SFIA taxonomy
-            taxonomy = self.load_taxonomy()
-            if 'sfia' in taxonomy.get('framework_source', '').lower():
-                level_mapping = {
-                    'beginner': 1,
-                    'intermediate': 2, 
-                    'advanced': 3,
-                    'expert': 4
-                }
-                level = level_mapping.get(level, level)
+            # Try to convert string numbers to integers first
+            if level.isdigit():
+                level = int(level)
+            else:
+                # Convert text levels to SFIA levels if using SFIA taxonomy
+                taxonomy = self.load_taxonomy()
+                if 'sfia' in taxonomy.get('framework_source', '').lower():
+                    level_mapping = {
+                        'beginner': 1,
+                        'intermediate': 2, 
+                        'advanced': 3,
+                        'expert': 4
+                    }
+                    level = level_mapping.get(level, level)
         
         return level in supported_levels
     

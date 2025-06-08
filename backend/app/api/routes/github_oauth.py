@@ -3,12 +3,16 @@ GitHub OAuth Integration API Routes
 """
 import secrets
 import httpx
-from datetime import datetime
+import json
+import logging
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Depends
 from sqlmodel import select
+
+logger = logging.getLogger(__name__)
 
 from app.api.deps import CurrentUser, SessionDep
 from app.core.config import settings
@@ -24,6 +28,7 @@ from app.models import (
     GitHubContributorPublic,
     GitHubRepositoryContribution,
     GitHubOrganizationContributorsResponse,
+    ContributorAnalysis,
     Message,
 )
 
@@ -719,4 +724,419 @@ async def save_organization_contributors(
         raise HTTPException(
             status_code=500, 
             detail=f"Failed to save organization contributors: {str(e)}"
+        )
+
+
+# Temporarily disabled due to missing github_analysis_service
+# @router.get("/contributor/{contributor_id}/detailed-activities")
+# async def get_contributor_detailed_activities(
+#     contributor_id: str,
+#     session: SessionDep,
+#     current_user: CurrentUser,
+#     months_back: int = 12
+# ) -> Any:
+#     """
+#     Get detailed GitHub activities for a specific contributor for skill analysis.
+#     Requires GitHub OAuth connection with appropriate scopes.
+#     """
+#     from app.services.github_analysis_service import github_analysis_service
+    
+    # Verify user has GitHub OAuth connection
+    statement = select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
+    github_oauth = session.exec(statement).first()
+    
+    if not github_oauth or not github_oauth.is_active:
+        raise HTTPException(
+            status_code=401, 
+            detail="GitHub connection required. Please connect your GitHub account first."
+        )
+    
+    try:
+        # Get contributor details
+        contributor_statement = select(GitHubContributor).where(GitHubContributor.id == contributor_id)
+        contributor = session.exec(contributor_statement).first()
+        
+        if not contributor:
+            raise HTTPException(status_code=404, detail="Contributor not found")
+        
+        # Collect detailed activities
+        activity_data = await github_analysis_service.collect_contributor_activities(
+            contributor, github_oauth, session, months_back
+        )
+        
+        # Prepare response
+        return {
+            "contributor": {
+                "id": contributor.id,
+                "github_id": contributor.github_id,
+                "login": contributor.login,
+                "name": contributor.name,
+                "total_contributions": contributor.total_contributions
+            },
+            "activity_summary": {
+                "total_activities": activity_data.total_activities,
+                "pull_requests_count": len(activity_data.pull_requests),
+                "code_reviews_count": len(activity_data.code_reviews),
+                "issues_count": len(activity_data.issues),
+                "commits_count": len(activity_data.commits),
+                "repositories_count": len(activity_data.repositories),
+                "top_languages": dict(sorted(activity_data.languages.items(), key=lambda x: x[1], reverse=True)[:5])
+            },
+            "pull_requests": activity_data.pull_requests[:20],  # Limit to recent 20
+            "code_reviews": activity_data.code_reviews[:20],
+            "issues": activity_data.issues[:20],
+            "commits": activity_data.commits[:20],
+            "repositories": list(activity_data.repositories),
+            "period_analyzed": f"{months_back} months",
+            "analyzed_at": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting detailed activities for contributor {contributor_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to collect contributor activities: {str(e)}"
+        )
+
+
+@router.post("/contributor/{contributor_id}/analyze-skills")
+async def analyze_contributor_skills(
+    contributor_id: str,
+    session: SessionDep,
+    current_user: CurrentUser,
+    months_back: int = 12
+) -> Any:
+    """
+    Analyze a contributor's GitHub activities to infer skills and career level.
+    This generates an AI-powered assessment based on their contributions.
+    """
+    from app.services.github_analysis_service import github_analysis_service
+    
+    # Verify user has GitHub OAuth connection
+    statement = select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
+    github_oauth = session.exec(statement).first()
+    
+    if not github_oauth or not github_oauth.is_active:
+        raise HTTPException(
+            status_code=401, 
+            detail="GitHub connection required. Please connect your GitHub account first."
+        )
+    
+    try:
+        # Get contributor details
+        contributor_statement = select(GitHubContributor).where(GitHubContributor.id == contributor_id)
+        contributor = session.exec(contributor_statement).first()
+        
+        if not contributor:
+            raise HTTPException(status_code=404, detail="Contributor not found")
+        
+        # Check if recent analysis exists
+        existing_analysis = session.exec(
+            select(ContributorAnalysis)
+            .where(ContributorAnalysis.contributor_id == contributor_id)
+            .order_by(ContributorAnalysis.generated_at.desc())
+        ).first()
+        
+        # If analysis exists and is recent (less than 7 days), return it
+        if existing_analysis:
+            generated_date = datetime.fromisoformat(existing_analysis.generated_at)
+            if datetime.utcnow() - generated_date < timedelta(days=7):
+                return {
+                    "analysis": {
+                        "id": existing_analysis.id,
+                        "technical_summary": existing_analysis.technical_summary,
+                        "career_level_assessment": existing_analysis.career_level_assessment,
+                        "confidence_score": existing_analysis.confidence_score,
+                        "total_activities_analyzed": existing_analysis.total_activities_analyzed,
+                        "generated_at": existing_analysis.generated_at,
+                        "is_recent": True
+                    },
+                    "contributor": {
+                        "id": contributor.id,
+                        "login": contributor.login,
+                        "name": contributor.name
+                    }
+                }
+        
+        # Collect activities and generate new analysis
+        activity_data = await github_analysis_service.collect_contributor_activities(
+            contributor, github_oauth, session, months_back
+        )
+        
+        # Generate comprehensive analysis
+        analysis = await github_analysis_service.analyze_contributor_activities(
+            contributor, activity_data, current_user, session
+        )
+        
+        return {
+            "analysis": {
+                "id": analysis.id,
+                "technical_summary": analysis.technical_summary,
+                "career_level_assessment": analysis.career_level_assessment,
+                "confidence_score": analysis.confidence_score,
+                "total_activities_analyzed": analysis.total_activities_analyzed,
+                "generated_at": analysis.generated_at,
+                "is_recent": False
+            },
+            "contributor": {
+                "id": contributor.id,
+                "login": contributor.login,
+                "name": contributor.name
+            },
+            "activity_summary": {
+                "total_activities": activity_data.total_activities,
+                "repositories_count": len(activity_data.repositories),
+                "top_languages": dict(sorted(activity_data.languages.items(), key=lambda x: x[1], reverse=True)[:5])
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error analyzing skills for contributor {contributor_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to analyze contributor skills: {str(e)}"
+        )
+
+
+@router.get("/my-github-analysis")
+async def get_my_github_analysis(
+    session: SessionDep,
+    current_user: CurrentUser
+) -> Any:
+    """
+    Get the current user's own GitHub contribution analysis.
+    Requires the user to be a contributor in at least one organization.
+    """
+    
+    # Check if user has GitHub OAuth
+    github_oauth_statement = select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
+    github_oauth = session.exec(github_oauth_statement).first()
+    
+    if not github_oauth or not github_oauth.is_active:
+        raise HTTPException(
+            status_code=404, 
+            detail="GitHub integration not found. Please connect your GitHub account first."
+        )
+    
+    try:
+        # Find contributor record for this user
+        contributor_statement = select(GitHubContributor).where(
+            GitHubContributor.github_id == github_oauth.github_id
+        )
+        contributor = session.exec(contributor_statement).first()
+        
+        if not contributor:
+            return {
+                "has_analysis": False,
+                "message": "No contributor record found. You may need to be added to an organization first.",
+                "github_username": github_oauth.github_username,
+                "suggestion": "Ask an organization admin to sync contributors or join an organization."
+            }
+        
+        # Get latest analysis
+        analysis_statement = select(ContributorAnalysis).where(
+            ContributorAnalysis.contributor_id == contributor.id
+        ).order_by(ContributorAnalysis.generated_at.desc())
+        latest_analysis = session.exec(analysis_statement).first()
+        
+        if not latest_analysis:
+            return {
+                "has_analysis": False,
+                "contributor": {
+                    "id": contributor.id,
+                    "login": contributor.login,
+                    "name": contributor.name,
+                    "total_contributions": contributor.total_contributions
+                },
+                "message": "No skill analysis found. You can request a new analysis.",
+                "can_analyze": True
+            }
+        
+        # Parse skill inferences
+        skill_inferences = []
+        try:
+            if latest_analysis.skill_inferences:
+                skill_inferences = json.loads(latest_analysis.skill_inferences)
+        except json.JSONDecodeError:
+            pass
+        
+        # Parse strengths and improvement areas
+        strengths = []
+        improvement_areas = []
+        try:
+            if latest_analysis.strengths:
+                strengths = json.loads(latest_analysis.strengths)
+            if latest_analysis.improvement_areas:
+                improvement_areas = json.loads(latest_analysis.improvement_areas)
+        except json.JSONDecodeError:
+            pass
+        
+        return {
+            "has_analysis": True,
+            "analysis": {
+                "id": latest_analysis.id,
+                "technical_summary": latest_analysis.technical_summary,
+                "career_level_assessment": latest_analysis.career_level_assessment,
+                "confidence_score": latest_analysis.confidence_score,
+                "total_activities_analyzed": latest_analysis.total_activities_analyzed,
+                "analysis_period_months": latest_analysis.analysis_period_months,
+                "generated_at": latest_analysis.generated_at,
+                "skill_inferences": skill_inferences,
+                "strengths": strengths,
+                "improvement_areas": improvement_areas
+            },
+            "contributor": {
+                "id": contributor.id,
+                "login": contributor.login,
+                "name": contributor.name,
+                "total_contributions": contributor.total_contributions
+            },
+            "can_refresh": True,
+            "last_updated": latest_analysis.generated_at
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting GitHub analysis for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve GitHub analysis: {str(e)}"
+        )
+
+
+@router.post("/request-my-analysis")
+async def request_my_github_analysis(
+    session: SessionDep,
+    current_user: CurrentUser,
+    months_back: int = 12
+) -> Message:
+    """
+    Request a fresh GitHub contribution analysis for the current user.
+    This will analyze their recent activities and generate skill assessments.
+    """
+    from app.services.github_analysis_service import github_analysis_service
+    
+    # Check if user has GitHub OAuth
+    github_oauth_statement = select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
+    github_oauth = session.exec(github_oauth_statement).first()
+    
+    if not github_oauth or not github_oauth.is_active:
+        raise HTTPException(
+            status_code=404, 
+            detail="GitHub integration not found. Please connect your GitHub account first."
+        )
+    
+    try:
+        # Find contributor record for this user
+        contributor_statement = select(GitHubContributor).where(
+            GitHubContributor.github_id == github_oauth.github_id
+        )
+        contributor = session.exec(contributor_statement).first()
+        
+        if not contributor:
+            raise HTTPException(
+                status_code=404,
+                detail="No contributor record found. You may need to be added to an organization first."
+            )
+        
+        # Collect activities and generate analysis
+        activity_data = await github_analysis_service.collect_contributor_activities(
+            contributor, github_oauth, session, months_back
+        )
+        
+        # Generate comprehensive analysis
+        analysis = await github_analysis_service.analyze_contributor_activities(
+            contributor, activity_data, current_user, session
+        )
+        
+        return Message(
+            message=f"GitHub analysis completed successfully. Analyzed {activity_data.total_activities} "
+                   f"activities across {len(activity_data.repositories)} repositories over the past {months_back} months."
+        )
+        
+    except Exception as e:
+        logger.error(f"Error requesting GitHub analysis for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate GitHub analysis: {str(e)}"
+        )
+
+
+@router.get("/user/orgs")
+async def get_user_organizations(
+    session: SessionDep,
+    current_user: CurrentUser
+) -> Any:
+    """
+    Get the current user's GitHub organizations.
+    Requires GitHub OAuth connection with 'read:org' scope.
+    """
+    
+    # Verify user has GitHub OAuth connection
+    statement = select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
+    github_oauth = session.exec(statement).first()
+    
+    if not github_oauth or not github_oauth.is_active:
+        raise HTTPException(
+            status_code=401, 
+            detail="GitHub connection required. Please connect your GitHub account first."
+        )
+    
+    try:
+        # Decrypt access token
+        access_token = encryption_service.decrypt(github_oauth.encrypted_access_token)
+        
+        async with httpx.AsyncClient() as client:
+            # Get user's organizations
+            response = await client.get(
+                "https://api.github.com/user/orgs",
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            response.raise_for_status()
+            orgs_data = response.json()
+            
+            # Format the response
+            organizations = []
+            for org in orgs_data:
+                organizations.append({
+                    "id": org["id"],
+                    "login": org["login"],
+                    "name": org.get("name", org["login"]),
+                    "description": org.get("description"),
+                    "avatar_url": org.get("avatar_url"),
+                    "html_url": org["html_url"],
+                    "public_repos": org.get("public_repos"),
+                    "followers": org.get("followers"),
+                    "following": org.get("following"),
+                    "location": org.get("location"),
+                    "blog": org.get("blog"),
+                    "email": org.get("email"),
+                    "company": org.get("company"),
+                    "twitter_username": org.get("twitter_username")
+                })
+            
+            return {
+                "organizations": organizations,
+                "total_count": len(organizations),
+                "user": {
+                    "github_username": github_oauth.github_username,
+                    "github_id": github_oauth.github_id
+                }
+            }
+        
+    except httpx.HTTPError as e:
+        if e.response.status_code == 403:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied. You may not have the 'read:org' scope or permission to view organizations."
+            )
+        else:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"GitHub API error: {str(e)}"
+            )
+    except Exception as e:
+        logger.error(f"Error getting user organizations: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get user organizations: {str(e)}"
         )
