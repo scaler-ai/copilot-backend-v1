@@ -10,6 +10,7 @@ from app.api.routes import (
     mcp,
     mcp_ws,
     private,
+    skills,
     users,
     utils,
 )
@@ -26,6 +27,7 @@ api_router.include_router(github_oauth.router, prefix="/github", tags=["github-o
 api_router.include_router(llm_settings.router, prefix="/llm-settings", tags=["llm-settings"])
 api_router.include_router(mcp.router, prefix="/mcp", tags=["mcp"])
 api_router.include_router(mcp_ws.router, prefix="/mcp", tags=["mcp-websocket"])
+api_router.include_router(skills.router, prefix="/skills", tags=["skills"])
 
 
 if settings.ENVIRONMENT == "local":
