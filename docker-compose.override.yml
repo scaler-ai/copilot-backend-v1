@@ -49,6 +49,8 @@ services:
     restart: "no"
     ports:
       - "5432:5432"
+    environment:
+      POSTGRES_MULTIPLE_DATABASES: "app,test_app"
 
   adminer:
     restart: "no"
@@ -85,6 +87,9 @@ services:
       SMTP_PORT: "1025"
       SMTP_TLS: "false"
       EMAILS_FROM_EMAIL: "noreply@example.com"
+      # Use separate test database to prevent data loss
+      TEST_DATABASE_URL: "postgresql+psycopg://postgres:changethis@db:5432/test_app"
+      SECRET_KEY: "dev-secret-key-change-in-production-1234567890abcdef"
 
   mailcatcher:
     image: schickling/mailcatcher

@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = ""
+    
+    # Test database configuration
+    TEST_DATABASE_URL: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

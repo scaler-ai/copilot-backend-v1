@@ -1,7 +1,7 @@
 """Add GitHub OAuth integration
 
 Revision ID: a1b2c3d4e5f6
-Revises: f26bcd3fe7dc
+Revises: 54a4373cd5ad
 Create Date: 2025-06-08 07:43:00.000000
 
 """
@@ -12,7 +12,7 @@ import sqlmodel.sql.sqltypes
 
 # revision identifiers, used by Alembic.
 revision = 'a1b2c3d4e5f6'
-down_revision = 'f26bcd3fe7dc'
+down_revision = '54a4373cd5ad'
 branch_labels = None
 depends_on = None
 
