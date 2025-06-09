@@ -17,13 +17,9 @@ from sqlmodel import Session, select
 from app.core.encryption import encryption_service
 from app.models import (
     GitHubOAuth,
-    GitHubContributor, 
-    GitHubActivity,
-    GitHubPullRequest,
-    GitHubCodeReview,
-    GitHubIssueActivity,
+    GitHubContributor,
+    GitHubRepositoryContribution,
     ContributorAnalysis,
-    GitHubSkillRating,
     User
 )
 from app.services.llm_service import llm_service
@@ -577,9 +573,324 @@ class GitHubAnalysisService:
     ) -> List[Dict[str, Any]]:
         """Infer specific skills from GitHub activities"""
         
-        # This will be implemented in the next iteration
-        # For now, return a basic structure
-        return []
+        skill_inferences = []
+        
+        try:
+            # 1. Programming Language Skills
+            language_skills = self._infer_programming_language_skills(activity_data)
+            skill_inferences.extend(language_skills)
+            
+            # 2. Software Development Practices
+            dev_practice_skills = self._infer_development_practice_skills(activity_data)
+            skill_inferences.extend(dev_practice_skills)
+            
+            # 3. Collaboration and Leadership Skills
+            collaboration_skills = self._infer_collaboration_skills(activity_data)
+            skill_inferences.extend(collaboration_skills)
+            
+            # 4. Technical Analysis and Problem-Solving
+            analysis_skills = self._infer_analysis_skills(activity_data)
+            skill_inferences.extend(analysis_skills)
+            
+            # 5. Version Control and DevOps Practices
+            devops_skills = self._infer_devops_skills(activity_data)
+            skill_inferences.extend(devops_skills)
+            
+            logger.info(f"Inferred {len(skill_inferences)} skills from activities")
+            return skill_inferences
+            
+        except Exception as e:
+            logger.error(f"Error inferring skills from activities: {e}")
+            return []
+    
+    def _infer_programming_language_skills(self, activity_data: GitHubActivityData) -> List[Dict[str, Any]]:
+        """Infer programming language skills from code contributions"""
+        skills = []
+        
+        # Language mapping to SFIA skill codes
+        language_mapping = {
+            'Python': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'JavaScript': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'TypeScript': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'Java': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'Go': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'Rust': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'C++': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'C#': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'Swift': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'Kotlin': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'PHP': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'Ruby': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'SQL': {'sfia_code': 'DBAD', 'category': 'Technical skills'},
+            'HTML': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+            'CSS': {'sfia_code': 'PROG', 'category': 'Technical skills'},
+        }
+        
+        total_language_bytes = sum(activity_data.languages.values())
+        
+        for language, bytes_count in activity_data.languages.items():
+            if language in language_mapping:
+                # Calculate proficiency based on usage
+                usage_percentage = (bytes_count / total_language_bytes) * 100 if total_language_bytes > 0 else 0
+                
+                # Determine skill level based on usage and activity patterns
+                if usage_percentage > 40:
+                    skill_level = 4  # Advanced/Expert
+                elif usage_percentage > 20:
+                    skill_level = 3  # Intermediate/Advanced
+                elif usage_percentage > 10:
+                    skill_level = 2  # Intermediate
+                else:
+                    skill_level = 1  # Beginner
+                
+                # Boost level based on PR complexity
+                if activity_data.pull_requests:
+                    avg_changes = sum(pr.get('additions', 0) + pr.get('deletions', 0) 
+                                    for pr in activity_data.pull_requests) / len(activity_data.pull_requests)
+                    if avg_changes > 500:
+                        skill_level = min(skill_level + 1, 5)
+                
+                skills.append({
+                    'skill_id': f"prog_{language.lower()}",
+                    'skill_name': f"{language} Programming",
+                    'sfia_code': language_mapping[language]['sfia_code'],
+                    'category': language_mapping[language]['category'],
+                    'inferred_level': skill_level,
+                    'confidence_score': min(85, 40 + int(usage_percentage)),
+                    'evidence_summary': f"Used {language} in {len([r for r in activity_data.repositories])} repositories, "
+                                      f"{usage_percentage:.1f}% of total code",
+                    'evidence_count': len([pr for pr in activity_data.pull_requests 
+                                         if language.lower() in str(pr.get('languages', {})).lower()])
+                })
+        
+        return skills
+    
+    def _infer_development_practice_skills(self, activity_data: GitHubActivityData) -> List[Dict[str, Any]]:
+        """Infer software development practice skills"""
+        skills = []
+        
+        # Code Review Skills (SFIA: RVEW - Reviews)
+        if activity_data.code_reviews:
+            review_count = len(activity_data.code_reviews)
+            if review_count >= 20:
+                level = 4  # Senior reviewer
+            elif review_count >= 10:
+                level = 3  # Regular reviewer
+            elif review_count >= 5:
+                level = 2  # Occasional reviewer
+            else:
+                level = 1  # Basic reviewer
+            
+            skills.append({
+                'skill_id': 'code_review',
+                'skill_name': 'Code Review',
+                'sfia_code': 'RVEW',
+                'category': 'Development practices',
+                'inferred_level': level,
+                'confidence_score': min(90, 50 + review_count * 3),
+                'evidence_summary': f"Performed {review_count} code reviews, demonstrating quality assurance practices",
+                'evidence_count': review_count
+            })
+        
+        # Version Control (SFIA: CFMG - Configuration Management)
+        if activity_data.pull_requests or activity_data.commits:
+            pr_count = len(activity_data.pull_requests)
+            commit_count = len(activity_data.commits)
+            
+            # Calculate level based on PR complexity and volume
+            if pr_count >= 20 and commit_count >= 100:
+                level = 4  # Advanced Git usage
+            elif pr_count >= 10 and commit_count >= 50:
+                level = 3  # Intermediate Git usage
+            elif pr_count >= 5 or commit_count >= 20:
+                level = 2  # Basic Git usage
+            else:
+                level = 1  # Novice Git usage
+            
+            skills.append({
+                'skill_id': 'version_control',
+                'skill_name': 'Version Control (Git)',
+                'sfia_code': 'CFMG',
+                'category': 'Development practices',
+                'inferred_level': level,
+                'confidence_score': min(85, 60 + pr_count * 2),
+                'evidence_summary': f"Created {pr_count} pull requests and {commit_count} commits",
+                'evidence_count': pr_count + commit_count
+            })
+        
+        # Software Testing (inferred from PR patterns)
+        test_indicators = sum(1 for pr in activity_data.pull_requests 
+                             if any(keyword in pr.get('title', '').lower() or keyword in pr.get('description', '').lower()
+                                   for keyword in ['test', 'spec', 'unittest', 'integration', 'coverage']))
+        
+        if test_indicators > 0:
+            if test_indicators >= 10:
+                level = 3  # Regular testing practices
+            elif test_indicators >= 5:
+                level = 2  # Some testing experience
+            else:
+                level = 1  # Basic testing awareness
+            
+            skills.append({
+                'skill_id': 'software_testing',
+                'skill_name': 'Software Testing',
+                'sfia_code': 'TEST',
+                'category': 'Development practices',
+                'inferred_level': level,
+                'confidence_score': min(75, 40 + test_indicators * 5),
+                'evidence_summary': f"Evidence of testing practices in {test_indicators} contributions",
+                'evidence_count': test_indicators
+            })
+        
+        return skills
+    
+    def _infer_collaboration_skills(self, activity_data: GitHubActivityData) -> List[Dict[str, Any]]:
+        """Infer collaboration and teamwork skills"""
+        skills = []
+        
+        # Team Collaboration (SFIA: TEAM - Team working)
+        collaboration_score = 0
+        
+        # Factor 1: Number of repositories (shows ability to work across projects)
+        repo_count = len(activity_data.repositories)
+        if repo_count >= 10:
+            collaboration_score += 3
+        elif repo_count >= 5:
+            collaboration_score += 2
+        elif repo_count >= 3:
+            collaboration_score += 1
+        
+        # Factor 2: Code reviews (shows peer interaction)
+        review_count = len(activity_data.code_reviews)
+        if review_count >= 20:
+            collaboration_score += 3
+        elif review_count >= 10:
+            collaboration_score += 2
+        elif review_count >= 5:
+            collaboration_score += 1
+        
+        # Factor 3: Issue creation and discussion
+        issue_count = len(activity_data.issues)
+        if issue_count >= 10:
+            collaboration_score += 2
+        elif issue_count >= 5:
+            collaboration_score += 1
+        
+        if collaboration_score > 0:
+            level = min(4, max(1, collaboration_score))
+            
+            skills.append({
+                'skill_id': 'team_collaboration',
+                'skill_name': 'Team Collaboration',
+                'sfia_code': 'TEAM',
+                'category': 'People skills',
+                'inferred_level': level,
+                'confidence_score': min(80, 30 + collaboration_score * 10),
+                'evidence_summary': f"Collaborated across {repo_count} repositories, "
+                                  f"{review_count} reviews, {issue_count} issues",
+                'evidence_count': repo_count + review_count + issue_count
+            })
+        
+        # Technical Communication (SFIA: TCCP - Technical Communication)
+        communication_indicators = 0
+        
+        # Look for documentation, README updates, or detailed PR descriptions
+        for pr in activity_data.pull_requests:
+            description = pr.get('description', '')
+            title = pr.get('title', '')
+            if len(description) > 100 or any(keyword in title.lower() 
+                                           for keyword in ['doc', 'readme', 'guide', 'update']):
+                communication_indicators += 1
+        
+        if communication_indicators >= 3:
+            level = min(3, max(1, communication_indicators // 3))
+            
+            skills.append({
+                'skill_id': 'technical_communication',
+                'skill_name': 'Technical Communication',
+                'sfia_code': 'TCCP',
+                'category': 'People skills',
+                'inferred_level': level,
+                'confidence_score': min(70, 40 + communication_indicators * 5),
+                'evidence_summary': f"Demonstrated technical communication in {communication_indicators} contributions",
+                'evidence_count': communication_indicators
+            })
+        
+        return skills
+    
+    def _infer_analysis_skills(self, activity_data: GitHubActivityData) -> List[Dict[str, Any]]:
+        """Infer analytical and problem-solving skills"""
+        skills = []
+        
+        # Problem Analysis (SFIA: PLAN - Problem Analysis)
+        problem_solving_indicators = 0
+        
+        # Look for bug fixes, optimizations, refactoring
+        for pr in activity_data.pull_requests:
+            title_desc = (pr.get('title', '') + ' ' + pr.get('description', '')).lower()
+            if any(keyword in title_desc for keyword in 
+                  ['fix', 'bug', 'issue', 'optimize', 'refactor', 'improve', 'performance']):
+                problem_solving_indicators += 1
+        
+        # Issues created also indicate problem identification
+        problem_solving_indicators += len(activity_data.issues)
+        
+        if problem_solving_indicators >= 5:
+            if problem_solving_indicators >= 20:
+                level = 4  # Advanced problem solver
+            elif problem_solving_indicators >= 10:
+                level = 3  # Regular problem solver
+            else:
+                level = 2  # Occasional problem solver
+            
+            skills.append({
+                'skill_id': 'problem_analysis',
+                'skill_name': 'Problem Analysis',
+                'sfia_code': 'PLAN',
+                'category': 'Analytical skills',
+                'inferred_level': level,
+                'confidence_score': min(85, 40 + problem_solving_indicators * 2),
+                'evidence_summary': f"Demonstrated problem-solving in {problem_solving_indicators} contributions",
+                'evidence_count': problem_solving_indicators
+            })
+        
+        return skills
+    
+    def _infer_devops_skills(self, activity_data: GitHubActivityData) -> List[Dict[str, Any]]:
+        """Infer DevOps and infrastructure skills"""
+        skills = []
+        
+        # Look for DevOps-related file patterns and repository names
+        devops_indicators = 0
+        ci_cd_indicators = 0
+        
+        for repo_name in activity_data.repositories:
+            repo_lower = repo_name.lower()
+            if any(keyword in repo_lower for keyword in 
+                  ['docker', 'k8s', 'kubernetes', 'terraform', 'ansible', 'devops', 'infrastructure']):
+                devops_indicators += 1
+            
+            if any(keyword in repo_lower for keyword in 
+                  ['ci', 'cd', 'pipeline', 'github-actions', 'jenkins', 'deploy']):
+                ci_cd_indicators += 1
+        
+        # CI/CD Skills (SFIA: RELM - Release Management)
+        if ci_cd_indicators > 0 or devops_indicators > 0:
+            total_indicators = ci_cd_indicators + devops_indicators
+            level = min(3, max(1, total_indicators))
+            
+            skills.append({
+                'skill_id': 'cicd_devops',
+                'skill_name': 'CI/CD and DevOps',
+                'sfia_code': 'RELM',
+                'category': 'Technical skills',
+                'inferred_level': level,
+                'confidence_score': min(75, 30 + total_indicators * 15),
+                'evidence_summary': f"Worked on {total_indicators} DevOps-related repositories",
+                'evidence_count': total_indicators
+            })
+        
+        return skills
     
     async def _assess_career_level(
         self,

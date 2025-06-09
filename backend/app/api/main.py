@@ -1,9 +1,10 @@
 from fastapi import APIRouter
 
 from app.api.routes import (
+    admin_skill_config,
     chat,
     chat_ws,
-    github_oauth_working as github_oauth,
+    github_oauth,
     items,
     llm_settings,
     login,
@@ -28,6 +29,7 @@ api_router.include_router(llm_settings.router, prefix="/llm-settings", tags=["ll
 api_router.include_router(mcp.router, prefix="/mcp", tags=["mcp"])
 api_router.include_router(mcp_ws.router, prefix="/mcp", tags=["mcp-websocket"])
 api_router.include_router(skills.router, prefix="/skills", tags=["skills"])
+api_router.include_router(admin_skill_config.router, prefix="/admin", tags=["admin"])
 
 
 if settings.ENVIRONMENT == "local":

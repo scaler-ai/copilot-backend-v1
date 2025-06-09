@@ -10,7 +10,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Depends
-from sqlmodel import select
+from sqlmodel import select, func
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ from app.models import (
     ContributorAnalysis,
     Message,
 )
+from app.services.github_analysis_service import github_analysis_service
 
 router = APIRouter()
 
@@ -378,8 +379,8 @@ async def get_organization_contributors(
     page: int = 1
 ) -> Any:
     """
-    Get all contributors across repositories in a GitHub organization.
-    Requires GitHub OAuth connection with 'read:org' scope.
+    Get organization contributors from database.
+    Returns contributors that have been synced using the save endpoint.
     """
     # Verify user has GitHub OAuth connection
     statement = select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
@@ -391,109 +392,113 @@ async def get_organization_contributors(
             detail="GitHub connection required. Please connect your GitHub account first."
         )
     
-    # Check if user has required scope
-    scopes = github_oauth.scopes.split(",") if github_oauth.scopes else []
-    if "read:org" not in scopes:
+    # Validate pagination parameters
+    if page < 1:
+        page = 1
+    if per_page < 1 or per_page > 100:
+        per_page = 30
+    
+    # Get organization from database
+    org_statement = select(GitHubOrganization).where(GitHubOrganization.name == org_name)
+    organization = session.exec(org_statement).first()
+    
+    if not organization:
         raise HTTPException(
-            status_code=403,
-            detail="Insufficient permissions. 'read:org' scope required to access organization data."
+            status_code=404,
+            detail=f"Organization '{org_name}' not found in database. Please sync it first using POST /org/{org_name}/contributors/save"
         )
     
-    try:
-        # Decrypt access token
-        access_token = encryption_service.decrypt(github_oauth.encrypted_access_token)
-        
-        async with httpx.AsyncClient() as client:
-            # First, get all repositories in the organization
-            repos_url = f"https://api.github.com/orgs/{org_name}/repos"
-            repos_response = await client.get(
-                repos_url,
-                headers={"Authorization": f"Bearer {access_token}"},
-                params={"type": "all", "per_page": 100}
-            )
-            repos_response.raise_for_status()
-            repositories = repos_response.json()
-            
-            # Collect all unique contributors from all repositories
-            all_contributors = {}
-            
-            for repo in repositories:
-                repo_name = repo["name"]
-                contributors_url = f"https://api.github.com/repos/{org_name}/{repo_name}/contributors"
-                
-                try:
-                    contributors_response = await client.get(
-                        contributors_url,
-                        headers={"Authorization": f"Bearer {access_token}"},
-                        params={"per_page": 100}
-                    )
-                    contributors_response.raise_for_status()
-                    contributors = contributors_response.json()
-                    
-                    for contributor in contributors:
-                        user_id = contributor["id"]
-                        if user_id not in all_contributors:
-                            all_contributors[user_id] = {
-                                "id": contributor["id"],
-                                "login": contributor["login"],
-                                "avatar_url": contributor["avatar_url"],
-                                "html_url": contributor["html_url"],
-                                "type": contributor["type"],
-                                "total_contributions": 0,
-                                "repositories": []
-                            }
-                        
-                        all_contributors[user_id]["total_contributions"] += contributor["contributions"]
-                        all_contributors[user_id]["repositories"].append({
-                            "name": repo_name,
-                            "contributions": contributor["contributions"],
-                            "html_url": repo["html_url"]
-                        })
-                        
-                except httpx.HTTPError:
-                    # Skip repositories where we can't access contributors (private repos, etc.)
-                    continue
-            
-            # Convert to list and sort by total contributions
-            contributors_list = list(all_contributors.values())
-            contributors_list.sort(key=lambda x: x["total_contributions"], reverse=True)
-            
-            # Apply pagination
-            start_idx = (page - 1) * per_page
-            end_idx = start_idx + per_page
-            paginated_contributors = contributors_list[start_idx:end_idx]
-            
-            return {
-                "organization": org_name,
-                "total_contributors": len(contributors_list),
-                "total_repositories": len(repositories),
-                "page": page,
-                "per_page": per_page,
-                "total_pages": (len(contributors_list) + per_page - 1) // per_page,
-                "contributors": paginated_contributors
-            }
-            
-    except httpx.HTTPError as e:
-        if e.response.status_code == 404:
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Organization '{org_name}' not found or not accessible"
-            )
-        elif e.response.status_code == 403:
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied. You may not have permission to view this organization."
-            )
-        else:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"GitHub API error: {str(e)}"
-            )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to fetch organization contributors: {str(e)}"
+    # Get total count of contributors
+    count_statement = select(func.count()).select_from(GitHubContributor).where(
+        GitHubContributor.organization_id == organization.id
+    )
+    total_contributors = session.exec(count_statement).one()
+    
+    # Get paginated contributors with their repository contributions
+    contributors_statement = (
+        select(GitHubContributor)
+        .where(GitHubContributor.organization_id == organization.id)
+        .order_by(GitHubContributor.total_contributions.desc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    contributors = session.exec(contributors_statement).all()
+    
+    # Format response with repository contributions
+    contributors_data = []
+    for contributor in contributors:
+        # Get repository contributions for this contributor
+        repo_contributions_statement = (
+            select(GitHubRepositoryContribution)
+            .where(GitHubRepositoryContribution.contributor_id == contributor.id)
+            .order_by(GitHubRepositoryContribution.contributions.desc())
         )
+        repo_contributions = session.exec(repo_contributions_statement).all()
+        
+        repositories = []
+        for repo_contrib in repo_contributions:
+            repositories.append({
+                "name": repo_contrib.repository_name,
+                "contributions": repo_contrib.contributions,
+                "html_url": repo_contrib.repository_url,
+                "language": repo_contrib.repository_language,
+                "stars": repo_contrib.repository_stars,
+                "forks": repo_contrib.repository_forks
+            })
+        
+        # Get latest analysis for this contributor
+        latest_analysis_statement = select(ContributorAnalysis).where(
+            ContributorAnalysis.contributor_id == contributor.id
+        ).order_by(ContributorAnalysis.generated_at.desc()).limit(1)
+        latest_analysis = session.exec(latest_analysis_statement).first()
+        
+        # Calculate total skills from latest analysis
+        total_skills = 0
+        if latest_analysis and latest_analysis.skill_inferences:
+            try:
+                skill_data = json.loads(latest_analysis.skill_inferences)
+                total_skills = len(skill_data) if isinstance(skill_data, list) else 0
+            except:
+                total_skills = 0
+        
+        contributors_data.append({
+            "id": str(contributor.id),  # UUID as string for JSON serialization
+            "github_id": contributor.github_id,
+            "login": contributor.login,
+            "avatar_url": contributor.avatar_url,
+            "html_url": contributor.html_url,
+            "type": contributor.type,
+            "site_admin": contributor.site_admin,
+            "total_contributions": contributor.total_contributions,
+            "last_sync_at": contributor.last_sync_at if contributor.last_sync_at else None,
+            "repositories": repositories,
+            "last_analyzed_at": latest_analysis.generated_at if latest_analysis else None,
+            "analysis_summary": {
+                "total_skills": total_skills,
+                "confidence_score": latest_analysis.confidence_score if latest_analysis else None
+            } if latest_analysis else None
+        })
+    
+    # Get total repository count
+    repo_count_statement = (
+        select(func.count(func.distinct(GitHubRepositoryContribution.repository_name)))
+        .select_from(GitHubRepositoryContribution)
+        .join(GitHubContributor)
+        .where(GitHubContributor.organization_id == organization.id)
+    )
+    total_repositories = session.exec(repo_count_statement).one()
+    
+    return {
+        "organization": org_name,
+        "organization_id": str(organization.id),
+        "total_contributors": total_contributors,
+        "total_repositories": total_repositories,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": (total_contributors + per_page - 1) // per_page,
+        "last_sync_at": organization.last_sync_at if organization.last_sync_at else None,
+        "contributors": contributors_data
+    }
 
 
 @router.post("/org/{org_name}/contributors/save")
@@ -645,7 +650,8 @@ async def save_organization_contributors(
                                 created_at=now,
                                 updated_at=now,
                                 last_sync_at=now,
-                                organization_id=organization.id
+                                organization_id=organization.id,
+                                total_contributions=0
                             )
                             session.add(contributor)
                             contributors_saved += 1
@@ -705,12 +711,12 @@ async def save_organization_contributors(
             )
             
     except httpx.HTTPError as e:
-        if e.response.status_code == 404:
+        if hasattr(e, 'response') and e.response and e.response.status_code == 404:
             raise HTTPException(
                 status_code=404, 
                 detail=f"Organization '{org_name}' not found or not accessible"
             )
-        elif e.response.status_code == 403:
+        elif hasattr(e, 'response') and e.response and e.response.status_code == 403:
             raise HTTPException(
                 status_code=403,
                 detail="Access denied. You may not have permission to view this organization."
@@ -727,20 +733,17 @@ async def save_organization_contributors(
         )
 
 
-# Temporarily disabled due to missing github_analysis_service
-# @router.get("/contributor/{contributor_id}/detailed-activities")
-# async def get_contributor_detailed_activities(
-#     contributor_id: str,
-#     session: SessionDep,
-#     current_user: CurrentUser,
-#     months_back: int = 12
-# ) -> Any:
-#     """
-#     Get detailed GitHub activities for a specific contributor for skill analysis.
-#     Requires GitHub OAuth connection with appropriate scopes.
-#     """
-#     from app.services.github_analysis_service import github_analysis_service
-    
+@router.get("/contributor/{contributor_id}/detailed-activities")
+async def get_contributor_detailed_activities(
+    contributor_id: str,
+    session: SessionDep,
+    current_user: CurrentUser,
+    months_back: int = 12
+) -> Any:
+    """
+    Get detailed GitHub activities for a specific contributor for skill analysis.
+    Requires GitHub OAuth connection with appropriate scopes.
+    """
     # Verify user has GitHub OAuth connection
     statement = select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
     github_oauth = session.exec(statement).first()
@@ -810,8 +813,6 @@ async def analyze_contributor_skills(
     Analyze a contributor's GitHub activities to infer skills and career level.
     This generates an AI-powered assessment based on their contributions.
     """
-    from app.services.github_analysis_service import github_analysis_service
-    
     # Verify user has GitHub OAuth connection
     statement = select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
     github_oauth = session.exec(statement).first()
@@ -841,6 +842,14 @@ async def analyze_contributor_skills(
         if existing_analysis:
             generated_date = datetime.fromisoformat(existing_analysis.generated_at)
             if datetime.utcnow() - generated_date < timedelta(days=7):
+                # Parse skill inferences
+                skill_inferences = []
+                try:
+                    if existing_analysis.skill_inferences:
+                        skill_inferences = json.loads(existing_analysis.skill_inferences)
+                except json.JSONDecodeError:
+                    pass
+                
                 return {
                     "analysis": {
                         "id": existing_analysis.id,
@@ -849,6 +858,7 @@ async def analyze_contributor_skills(
                         "confidence_score": existing_analysis.confidence_score,
                         "total_activities_analyzed": existing_analysis.total_activities_analyzed,
                         "generated_at": existing_analysis.generated_at,
+                        "skill_inferences": skill_inferences,
                         "is_recent": True
                     },
                     "contributor": {
@@ -868,6 +878,14 @@ async def analyze_contributor_skills(
             contributor, activity_data, current_user, session
         )
         
+        # Parse skill inferences
+        skill_inferences = []
+        try:
+            if analysis.skill_inferences:
+                skill_inferences = json.loads(analysis.skill_inferences)
+        except json.JSONDecodeError:
+            pass
+        
         return {
             "analysis": {
                 "id": analysis.id,
@@ -876,6 +894,7 @@ async def analyze_contributor_skills(
                 "confidence_score": analysis.confidence_score,
                 "total_activities_analyzed": analysis.total_activities_analyzed,
                 "generated_at": analysis.generated_at,
+                "skill_inferences": skill_inferences,
                 "is_recent": False
             },
             "contributor": {
@@ -1067,8 +1086,8 @@ async def get_user_organizations(
     current_user: CurrentUser
 ) -> Any:
     """
-    Get the current user's GitHub organizations.
-    Requires GitHub OAuth connection with 'read:org' scope.
+    Get the current user's GitHub organizations from the database.
+    Returns organizations where the user is a contributor.
     """
     
     # Verify user has GitHub OAuth connection
@@ -1082,11 +1101,90 @@ async def get_user_organizations(
         )
     
     try:
+        # Find all organizations where this user is a contributor
+        organizations_statement = (
+            select(GitHubOrganization)
+            .join(GitHubContributor)
+            .where(GitHubContributor.github_id == github_oauth.github_id)
+            .distinct()
+        )
+        organizations = session.exec(organizations_statement).all()
+        
+        # Format the response
+        organizations_data = []
+        for org in organizations:
+            organizations_data.append({
+                "id": org.github_id,
+                "login": org.name,
+                "name": org.name,
+                "description": org.description,
+                "avatar_url": org.avatar_url,
+                "html_url": org.html_url,
+                "public_repos": org.public_repos,
+                "followers": org.followers,
+                "following": org.following,
+                "location": org.location,
+                "blog": org.blog,
+                "email": org.email,
+                "company": org.company,
+                "twitter_username": org.twitter_username,
+                "last_sync_at": org.last_sync_at,
+                "in_database": True
+            })
+        
+        return {
+            "organizations": organizations_data,
+            "total_count": len(organizations_data),
+            "user": {
+                "github_username": github_oauth.github_username,
+                "github_id": github_oauth.github_id
+            },
+            "source": "database",
+            "note": "Showing organizations where you are a contributor. Use the save endpoint to sync new organizations."
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting user organizations from database: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get user organizations: {str(e)}"
+        )
+
+
+@router.post("/user/orgs/sync")
+async def sync_user_organizations(
+    session: SessionDep,
+    current_user: CurrentUser
+) -> Any:
+    """
+    Sync the current user's GitHub organizations to the database.
+    This will fetch organizations from GitHub API and store them.
+    """
+    
+    # Verify user has GitHub OAuth connection
+    statement = select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
+    github_oauth = session.exec(statement).first()
+    
+    if not github_oauth or not github_oauth.is_active:
+        raise HTTPException(
+            status_code=401, 
+            detail="GitHub connection required. Please connect your GitHub account first."
+        )
+    
+    # Check if user has required scope
+    scopes = github_oauth.scopes.split(",") if github_oauth.scopes else []
+    if "read:org" not in scopes:
+        raise HTTPException(
+            status_code=403,
+            detail="Insufficient permissions. 'read:org' scope required to access organization data."
+        )
+    
+    try:
         # Decrypt access token
         access_token = encryption_service.decrypt(github_oauth.encrypted_access_token)
         
         async with httpx.AsyncClient() as client:
-            # Get user's organizations
+            # Get user's organizations from GitHub
             response = await client.get(
                 "https://api.github.com/user/orgs",
                 headers={"Authorization": f"Bearer {access_token}"}
@@ -1094,37 +1192,74 @@ async def get_user_organizations(
             response.raise_for_status()
             orgs_data = response.json()
             
-            # Format the response
-            organizations = []
-            for org in orgs_data:
-                organizations.append({
-                    "id": org["id"],
-                    "login": org["login"],
-                    "name": org.get("name", org["login"]),
-                    "description": org.get("description"),
-                    "avatar_url": org.get("avatar_url"),
-                    "html_url": org["html_url"],
-                    "public_repos": org.get("public_repos"),
-                    "followers": org.get("followers"),
-                    "following": org.get("following"),
-                    "location": org.get("location"),
-                    "blog": org.get("blog"),
-                    "email": org.get("email"),
-                    "company": org.get("company"),
-                    "twitter_username": org.get("twitter_username")
+            synced_orgs = []
+            now = datetime.utcnow().isoformat()
+            
+            for org_data in orgs_data:
+                # Check if organization already exists
+                existing_org = session.exec(
+                    select(GitHubOrganization).where(GitHubOrganization.github_id == org_data["id"])
+                ).first()
+                
+                if existing_org:
+                    # Update existing organization
+                    existing_org.name = org_data["login"]
+                    existing_org.description = org_data.get("description")
+                    existing_org.html_url = org_data.get("html_url", f"https://github.com/{org_data['login']}")
+                    existing_org.avatar_url = org_data.get("avatar_url")
+                    existing_org.public_repos = org_data.get("public_repos")
+                    existing_org.followers = org_data.get("followers")
+                    existing_org.following = org_data.get("following")
+                    existing_org.location = org_data.get("location")
+                    existing_org.email = org_data.get("email")
+                    existing_org.blog = org_data.get("blog")
+                    existing_org.company = org_data.get("company")
+                    existing_org.twitter_username = org_data.get("twitter_username")
+                    existing_org.updated_at = now
+                    existing_org.last_sync_at = now
+                    
+                    organization = existing_org
+                    action = "updated"
+                else:
+                    # Create new organization
+                    organization = GitHubOrganization(
+                        github_id=org_data["id"],
+                        name=org_data["login"],
+                        description=org_data.get("description"),
+                        html_url=org_data.get("html_url", f"https://github.com/{org_data['login']}"),
+                        avatar_url=org_data.get("avatar_url"),
+                        public_repos=org_data.get("public_repos"),
+                        followers=org_data.get("followers"),
+                        following=org_data.get("following"),
+                        location=org_data.get("location"),
+                        email=org_data.get("email"),
+                        blog=org_data.get("blog"),
+                        company=org_data.get("company"),
+                        twitter_username=org_data.get("twitter_username"),
+                        created_at=now,
+                        updated_at=now,
+                        last_sync_at=now,
+                        discovered_by_id=current_user.id
+                    )
+                    session.add(organization)
+                    action = "added"
+                
+                session.commit()
+                
+                synced_orgs.append({
+                    "id": organization.github_id,
+                    "login": organization.name,
+                    "action": action
                 })
             
             return {
-                "organizations": organizations,
-                "total_count": len(organizations),
-                "user": {
-                    "github_username": github_oauth.github_username,
-                    "github_id": github_oauth.github_id
-                }
+                "message": f"Successfully synced {len(synced_orgs)} organizations",
+                "organizations_synced": synced_orgs,
+                "total_count": len(synced_orgs)
             }
         
     except httpx.HTTPError as e:
-        if e.response.status_code == 403:
+        if hasattr(e, 'response') and e.response and e.response.status_code == 403:
             raise HTTPException(
                 status_code=403,
                 detail="Access denied. You may not have the 'read:org' scope or permission to view organizations."
@@ -1135,8 +1270,8 @@ async def get_user_organizations(
                 detail=f"GitHub API error: {str(e)}"
             )
     except Exception as e:
-        logger.error(f"Error getting user organizations: {e}")
+        logger.error(f"Error syncing user organizations: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to get user organizations: {str(e)}"
+            detail=f"Failed to sync user organizations: {str(e)}"
         )
