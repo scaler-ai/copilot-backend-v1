@@ -51,6 +51,8 @@ class User(UserBase, table=True):
     chat_conversations: list["ChatConversation"] = Relationship(back_populates="owner", cascade_delete=True)
     llm_settings: Optional["LLMSettings"] = Relationship(back_populates="owner", cascade_delete=True, sa_relationship_kwargs={"uselist": False})
     github_oauth: Optional["GitHubOAuth"] = Relationship(back_populates="owner", cascade_delete=True, sa_relationship_kwargs={"uselist": False})
+    skills: list["UserSkill"] = Relationship(back_populates="owner", cascade_delete=True)
+    # discovered_github_organizations: list["GitHubOrganization"] = Relationship(back_populates="discovered_by", cascade_delete=True)
 
 
 # Properties to return via API, id is always required
@@ -386,3 +388,986 @@ class GitHubOAuthSettings(SQLModel):
     client_secret: str = Field(min_length=1, max_length=100)
     redirect_uri: str = Field(min_length=1, max_length=500)
     scopes: list[str] = Field(default=["repo", "read:user", "user:email", "read:org", "read:discussion", "read:project"])
+
+
+# Skill Mapping Models
+class UserSkillBase(SQLModel):
+    skill_id: str = Field(max_length=255, index=True)  # References skills-taxonomy.yaml
+    skill_name: str = Field(max_length=255)  # Cached from taxonomy for performance
+    skill_level: str = Field(max_length=50)  # Text level or SFIA level
+    proficiency_score: int | None = Field(default=None, ge=1, le=100)  # Optional 1-100 score
+    years_experience: float | None = Field(default=None, ge=0)  # Years of experience
+    is_verified: bool = Field(default=False)  # Whether skill has been verified
+    last_used: str | None = Field(default=None)  # When skill was last used (YYYY-MM format)
+    learning_status: str = Field(default="active", max_length=50)  # active, learning, rusty, deprecated
+    notes: str | None = Field(default=None, max_length=1000)  # Personal notes about the skill
+    sfia_level: int | None = Field(default=None, ge=1, le=7)  # SFIA numeric level (1-7)
+    sfia_code: str | None = Field(default=None, max_length=10)  # Cached SFIA code from taxonomy
+
+
+# Database model for user skills
+class UserSkill(UserSkillBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    owner_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE")
+    owner: User | None = Relationship(back_populates="skills")
+    
+    # Relationships
+    endorsements: list["SkillEndorsement"] = Relationship(back_populates="user_skill", cascade_delete=True)
+    assessments: list["SkillAssessment"] = Relationship(back_populates="user_skill", cascade_delete=True)
+
+
+# Public model for API responses
+class UserSkillPublic(UserSkillBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    owner_id: uuid.UUID
+    endorsement_count: int = Field(default=0)
+    latest_assessment_score: int | None = Field(default=None)
+
+
+# Request models
+class UserSkillCreate(SQLModel):
+    skill_id: str = Field(min_length=1, max_length=255)
+    skill_level: str = Field(min_length=1)  # Support both SFIA levels (1-7) and text levels
+    proficiency_score: int | None = Field(default=None, ge=1, le=100)
+    years_experience: float | None = Field(default=None, ge=0)
+    last_used: str | None = Field(default=None, regex="^[0-9]{4}-[0-9]{2}$")  # YYYY-MM format
+    learning_status: str = Field(default="active", regex="^(active|learning|rusty|deprecated)$")
+    notes: str | None = Field(default=None, max_length=1000)
+    sfia_level: int | None = Field(default=None, ge=1, le=7)  # SFIA numeric level
+
+
+class UserSkillUpdate(SQLModel):
+    skill_level: str | None = Field(default=None)  # Support both SFIA and text levels
+    proficiency_score: int | None = Field(default=None, ge=1, le=100)
+    years_experience: float | None = Field(default=None, ge=0)
+    last_used: str | None = Field(default=None, regex="^[0-9]{4}-[0-9]{2}$")
+    learning_status: str | None = Field(default=None, regex="^(active|learning|rusty|deprecated)$")
+    notes: str | None = Field(default=None, max_length=1000)
+    sfia_level: int | None = Field(default=None, ge=1, le=7)  # SFIA numeric level
+
+
+# Skill Endorsement Models
+class SkillEndorsementBase(SQLModel):
+    comment: str | None = Field(default=None, max_length=500)
+    strength: int = Field(ge=1, le=5, default=5)  # 1-5 rating of skill strength
+
+
+class SkillEndorsement(SkillEndorsementBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    user_skill_id: uuid.UUID = Field(foreign_key="userskill.id", nullable=False, ondelete="CASCADE")
+    endorsed_by_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE")
+    
+    # Relationships
+    user_skill: UserSkill | None = Relationship(back_populates="endorsements")
+    endorsed_by: User | None = Relationship()
+
+
+class SkillEndorsementPublic(SkillEndorsementBase):
+    id: uuid.UUID
+    created_at: str
+    endorsed_by_name: str = Field(max_length=255)
+    endorsed_by_id: uuid.UUID
+
+
+class SkillEndorsementCreate(SQLModel):
+    user_skill_id: uuid.UUID
+    comment: str | None = Field(default=None, max_length=500)
+    strength: int = Field(ge=1, le=5, default=5)
+
+
+# Skill Assessment Models  
+class SkillAssessmentBase(SQLModel):
+    assessment_type: str = Field(max_length=100)  # self, peer, manager, formal_test
+    score: int = Field(ge=1, le=100)
+    max_score: int = Field(default=100, ge=1)
+    assessor_notes: str | None = Field(default=None, max_length=1000)
+    assessment_date: str = Field(default_factory=lambda: datetime.utcnow().date().isoformat())
+
+
+class SkillAssessment(SkillAssessmentBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    user_skill_id: uuid.UUID = Field(foreign_key="userskill.id", nullable=False, ondelete="CASCADE")
+    assessor_id: uuid.UUID | None = Field(foreign_key="user.id", nullable=True, ondelete="SET NULL")
+    
+    # Relationships
+    user_skill: UserSkill | None = Relationship(back_populates="assessments")
+    assessor: User | None = Relationship()
+
+
+class SkillAssessmentPublic(SkillAssessmentBase):
+    id: uuid.UUID
+    created_at: str
+    assessor_name: str | None = Field(default=None, max_length=255)
+
+
+class SkillAssessmentCreate(SQLModel):
+    user_skill_id: uuid.UUID
+    assessment_type: str = Field(regex="^(self|peer|manager|formal_test)$")
+    score: int = Field(ge=1, le=100)
+    max_score: int = Field(default=100, ge=1)
+    assessor_notes: str | None = Field(default=None, max_length=1000)
+
+
+# Team/Project Skill Requirements
+class SkillRequirementBase(SQLModel):
+    skill_id: str = Field(max_length=255)
+    skill_name: str = Field(max_length=255)  # Cached from taxonomy
+    required_level: str = Field(max_length=50)  # beginner, intermediate, advanced, expert
+    importance: str = Field(default="required", max_length=50)  # required, preferred, nice_to_have
+    description: str | None = Field(default=None, max_length=500)
+
+
+class SkillRequirement(SkillRequirementBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_by_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE")
+    
+    # Context - what this requirement is for
+    context_type: str = Field(max_length=100)  # project, team, role, position
+    context_id: str = Field(max_length=255)  # ID of the project/team/role
+    context_name: str = Field(max_length=255)  # Human readable name
+    
+    # Relationships
+    created_by: User | None = Relationship()
+
+
+class SkillRequirementPublic(SkillRequirementBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    context_type: str
+    context_id: str
+    context_name: str
+    created_by_name: str = Field(max_length=255)
+
+
+class SkillRequirementCreate(SQLModel):
+    skill_id: str = Field(min_length=1, max_length=255)
+    required_level: str = Field(regex="^(beginner|intermediate|advanced|expert)$")
+    importance: str = Field(default="required", regex="^(required|preferred|nice_to_have)$")
+    description: str | None = Field(default=None, max_length=500)
+    context_type: str = Field(min_length=1, max_length=100)
+    context_id: str = Field(min_length=1, max_length=255)
+    context_name: str = Field(min_length=1, max_length=255)
+
+
+# Skill Gap Analysis Models
+class SkillGap(SQLModel):
+    """Model for skill gap analysis results"""
+    skill_id: str
+    skill_name: str
+    required_level: str
+    current_level: str | None = Field(default=None)
+    gap_severity: str  # critical, major, minor, none
+    has_skill: bool = Field(default=False)
+    proficiency_score: int | None = Field(default=None)
+    recommendation: str | None = Field(default=None)
+
+
+class SkillMatchResult(SQLModel):
+    """Model for skill matching results"""
+    user_id: uuid.UUID
+    user_name: str
+    match_percentage: float = Field(ge=0, le=100)
+    skill_matches: list[dict[str, Any]] = Field(default_factory=list)
+    skill_gaps: list[SkillGap] = Field(default_factory=list)
+    overall_score: float = Field(ge=0, le=100)
+
+
+# Response models for complex operations
+class UserSkillsResponse(SQLModel):
+    skills: list[UserSkillPublic]
+    total_count: int
+    by_category: dict[str, int] = Field(default_factory=dict)
+    by_level: dict[str, int] = Field(default_factory=dict)
+
+
+class SkillTaxonomyResponse(SQLModel):
+    """Response model for skill taxonomy data"""
+    categories: dict[str, Any]
+    skill_levels: dict[str, Any]
+    skill_pathways: dict[str, Any]
+    version: str
+    last_updated: str
+
+
+class SkillAnalyticsResponse(SQLModel):
+    """Response model for skill analytics"""
+    total_skills: int
+    skills_by_category: dict[str, int]
+    skills_by_level: dict[str, int]
+    top_skills: list[dict[str, Any]]
+    skill_trends: list[dict[str, Any]]
+    certification_stats: dict[str, int]
+
+
+# GitHub Organization Models
+class GitHubOrganizationBase(SQLModel):
+    name: str = Field(max_length=255, index=True)
+    description: str | None = Field(default=None, max_length=1000)
+    html_url: str = Field(max_length=500)
+    avatar_url: str | None = Field(default=None, max_length=500)
+    public_repos: int | None = Field(default=None)
+    followers: int | None = Field(default=None)
+    following: int | None = Field(default=None)
+    location: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
+    blog: str | None = Field(default=None, max_length=500)
+    company: str | None = Field(default=None, max_length=255)
+    twitter_username: str | None = Field(default=None, max_length=255)
+
+
+class GitHubOrganization(GitHubOrganizationBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    github_id: int = Field(unique=True, index=True)  # GitHub organization ID
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_sync_at: str | None = Field(default=None)
+    
+    # Track who discovered/added this organization
+    discovered_by_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE")
+    # discovered_by: User | None = Relationship()
+    
+    # Relationships
+    # contributors: list["GitHubContributor"] = Relationship(back_populates="organization", cascade_delete=True)
+
+
+class GitHubOrganizationPublic(GitHubOrganizationBase):
+    id: uuid.UUID
+    github_id: int
+    created_at: str
+    updated_at: str
+    last_sync_at: str | None
+    contributor_count: int = Field(default=0)
+    repository_count: int = Field(default=0)
+
+
+# GitHub Contributor Models
+class GitHubContributorBase(SQLModel):
+    login: str = Field(max_length=255, index=True)
+    avatar_url: str | None = Field(default=None, max_length=500)
+    html_url: str = Field(max_length=500)
+    type: str = Field(max_length=50)  # User, Bot, etc.
+    site_admin: bool = Field(default=False)
+    name: str | None = Field(default=None, max_length=255)
+    company: str | None = Field(default=None, max_length=255)
+    blog: str | None = Field(default=None, max_length=500)
+    location: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=255)
+    bio: str | None = Field(default=None, max_length=1000)
+    public_repos: int | None = Field(default=None)
+    followers: int | None = Field(default=None)
+    following: int | None = Field(default=None)
+    hireable: bool | None = Field(default=None)
+    total_contributions: int = Field(default=0)
+
+
+class GitHubContributor(GitHubContributorBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    github_id: int = Field(index=True)  # GitHub user ID
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_sync_at: str | None = Field(default=None)
+    
+    # Organization relationship
+    organization_id: uuid.UUID = Field(foreign_key="githuborganization.id", nullable=False, ondelete="CASCADE")
+    # organization: GitHubOrganization | None = Relationship(back_populates="contributors")
+    
+    # Repository contributions
+    repository_contributions: list["GitHubRepositoryContribution"] = Relationship(back_populates="contributor", cascade_delete=True)
+    
+    # Enhanced activity tracking
+    activities: list["GitHubActivity"] = Relationship(back_populates="contributor", cascade_delete=True)
+    pull_requests: list["GitHubPullRequest"] = Relationship(back_populates="contributor", cascade_delete=True)
+    issue_activities: list["GitHubIssueActivity"] = Relationship(back_populates="contributor", cascade_delete=True)
+    skill_analyses: list["ContributorAnalysis"] = Relationship(back_populates="contributor", cascade_delete=True)
+
+
+class GitHubContributorPublic(GitHubContributorBase):
+    id: uuid.UUID
+    github_id: int
+    created_at: str
+    updated_at: str
+    last_sync_at: str | None
+    repository_count: int = Field(default=0)
+    repositories: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# GitHub Repository Contribution Models
+class GitHubRepositoryContributionBase(SQLModel):
+    repository_name: str = Field(max_length=255, index=True)
+    repository_url: str = Field(max_length=500)
+    contributions: int = Field(default=0)
+    repository_description: str | None = Field(default=None, max_length=1000)
+    repository_language: str | None = Field(default=None, max_length=100)
+    repository_stars: int | None = Field(default=None)
+    repository_forks: int | None = Field(default=None)
+    is_fork: bool = Field(default=False)
+    is_private: bool = Field(default=False)
+
+
+class GitHubRepositoryContribution(GitHubRepositoryContributionBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    repository_id: int | None = Field(default=None, index=True)  # GitHub repository ID
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Contributor relationship
+    contributor_id: uuid.UUID = Field(foreign_key="githubcontributor.id", nullable=False, ondelete="CASCADE")
+    contributor: GitHubContributor | None = Relationship(back_populates="repository_contributions")
+
+
+class GitHubRepositoryContributionPublic(GitHubRepositoryContributionBase):
+    id: uuid.UUID
+    repository_id: int | None
+    created_at: str
+    updated_at: str
+
+
+# Response models for GitHub API endpoints
+class GitHubOrganizationContributorsResponse(SQLModel):
+    organization: str
+    total_contributors: int
+    total_repositories: int
+    page: int
+    per_page: int
+    total_pages: int
+    contributors: list[dict[str, Any]]
+
+
+class GitHubContributorAnalytics(SQLModel):
+    contributor_login: str
+    total_contributions: int
+    repository_count: int
+    top_languages: list[str]
+    contribution_distribution: dict[str, int]  # repo_name -> contributions
+    activity_level: str  # high, medium, low based on contributions
+    contributor_type: str  # core, regular, occasional
+
+
+class GitHubOrganizationAnalytics(SQLModel):
+    organization_name: str
+    total_contributors: int
+    total_repositories: int
+    top_contributors: list["GitHubContributorAnalytics"]
+    language_distribution: dict[str, int]
+    contribution_trends: dict[str, Any]
+    activity_summary: dict[str, int]
+
+
+# Enhanced GitHub Activity Models for Skill Analysis
+
+# Base models for GitHub activities
+class GitHubActivityBase(SQLModel):
+    activity_type: str = Field(max_length=100)  # pr_created, pr_reviewed, issue_created, comment_left, commit_made
+    repository_name: str = Field(max_length=255, index=True)
+    repository_url: str = Field(max_length=500)
+    title: str = Field(max_length=500)
+    description: str | None = Field(default=None, max_length=2000)
+    programming_languages: str | None = Field(default=None, max_length=500)  # JSON string of languages
+    complexity_indicators: str | None = Field(default=None, max_length=1000)  # JSON string of complexity metrics
+    github_created_at: str  # When the activity was created on GitHub
+    github_url: str = Field(max_length=500)
+
+
+class GitHubActivity(GitHubActivityBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    github_activity_id: str = Field(max_length=255, index=True)  # GitHub's unique ID for the activity
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Contributor relationship
+    contributor_id: uuid.UUID = Field(foreign_key="githubcontributor.id", nullable=False, ondelete="CASCADE")
+    contributor: GitHubContributor | None = Relationship(back_populates="activities")
+
+
+class GitHubActivityPublic(GitHubActivityBase):
+    id: uuid.UUID
+    github_activity_id: str
+    created_at: str
+    updated_at: str
+
+
+# Enhanced Pull Request model
+class GitHubPullRequestBase(SQLModel):
+    github_pr_id: int = Field(index=True)
+    repository_name: str = Field(max_length=255, index=True)
+    repository_url: str = Field(max_length=500)
+    title: str = Field(max_length=500)
+    description: str | None = Field(default=None, max_length=2000)
+    state: str = Field(max_length=50)  # open, closed, merged
+    additions: int = Field(default=0)
+    deletions: int = Field(default=0)
+    changed_files: int = Field(default=0)
+    programming_languages: str | None = Field(default=None, max_length=500)  # JSON string
+    code_complexity_score: int | None = Field(default=None, ge=1, le=100)
+    review_comments_received: int = Field(default=0)
+    review_comments_given: int = Field(default=0)
+    commits_count: int = Field(default=0)
+    is_draft: bool = Field(default=False)
+    merged_at: str | None = Field(default=None)
+    closed_at: str | None = Field(default=None)
+    github_created_at: str
+    github_updated_at: str
+
+
+class GitHubPullRequest(GitHubPullRequestBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Contributor relationship
+    contributor_id: uuid.UUID = Field(foreign_key="githubcontributor.id", nullable=False, ondelete="CASCADE")
+    contributor: GitHubContributor | None = Relationship(back_populates="pull_requests")
+    
+    # Reviews relationship
+    reviews_received: list["GitHubCodeReview"] = Relationship(back_populates="pull_request")
+
+
+class GitHubPullRequestPublic(GitHubPullRequestBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+
+
+# Code Review model
+class GitHubCodeReviewBase(SQLModel):
+    github_review_id: int | None = Field(default=None, index=True)
+    review_type: str = Field(max_length=50)  # approve, request_changes, comment, dismiss
+    comment_count: int = Field(default=0)
+    technical_depth_score: int | None = Field(default=None, ge=1, le=100)
+    review_quality_indicators: str | None = Field(default=None, max_length=1000)  # JSON string
+    github_submitted_at: str
+
+
+class GitHubCodeReview(GitHubCodeReviewBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Relationships
+    reviewer_id: uuid.UUID = Field(foreign_key="githubcontributor.id", nullable=False, ondelete="CASCADE")
+    reviewer: GitHubContributor | None = Relationship()
+    
+    pull_request_id: uuid.UUID = Field(foreign_key="githubpullrequest.id", nullable=False, ondelete="CASCADE")
+    pull_request: GitHubPullRequest | None = Relationship(back_populates="reviews_received")
+
+
+class GitHubCodeReviewPublic(GitHubCodeReviewBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+
+
+# Issue Activity model
+class GitHubIssueActivityBase(SQLModel):
+    github_issue_id: int = Field(index=True)
+    repository_name: str = Field(max_length=255, index=True)
+    repository_url: str = Field(max_length=500)
+    issue_title: str = Field(max_length=500)
+    issue_description: str | None = Field(default=None, max_length=2000)
+    activity_type: str = Field(max_length=50)  # created, commented, closed, assigned
+    comment_content: str | None = Field(default=None, max_length=2000)
+    labels: str | None = Field(default=None, max_length=500)  # JSON string of issue labels
+    is_bug: bool = Field(default=False)
+    is_enhancement: bool = Field(default=False)
+    github_created_at: str
+
+
+class GitHubIssueActivity(GitHubIssueActivityBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Contributor relationship
+    contributor_id: uuid.UUID = Field(foreign_key="githubcontributor.id", nullable=False, ondelete="CASCADE")
+    contributor: GitHubContributor | None = Relationship(back_populates="issue_activities")
+
+
+class GitHubIssueActivityPublic(GitHubIssueActivityBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+
+
+# Skill Analysis Models
+class ContributorAnalysisBase(SQLModel):
+    technical_summary: str = Field(max_length=5000)  # LLM-generated summary
+    skill_inferences: str = Field(max_length=5000)  # JSON string of inferred skills
+    career_level_assessment: str = Field(max_length=2000)  # LLM assessment of career level
+    strengths: str | None = Field(default=None, max_length=2000)  # JSON string
+    improvement_areas: str | None = Field(default=None, max_length=2000)  # JSON string
+    confidence_score: int = Field(default=50, ge=1, le=100)  # Overall confidence in analysis
+    analysis_period_months: int = Field(default=12)  # Period analyzed
+    total_activities_analyzed: int = Field(default=0)
+
+
+class ContributorAnalysis(ContributorAnalysisBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Contributor relationship
+    contributor_id: uuid.UUID = Field(foreign_key="githubcontributor.id", nullable=False, ondelete="CASCADE")
+    contributor: GitHubContributor | None = Relationship(back_populates="skill_analyses")
+    
+    # User who requested the analysis
+    generated_by_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE")
+    generated_by: User | None = Relationship()
+
+
+class ContributorAnalysisPublic(ContributorAnalysisBase):
+    id: uuid.UUID
+    generated_at: str
+    updated_at: str
+
+
+# Skill Rating from GitHub Analysis
+class GitHubSkillRatingBase(SQLModel):
+    skill_id: str = Field(max_length=255, index=True)
+    skill_name: str = Field(max_length=255)
+    inferred_level: int = Field(ge=1, le=7)  # SFIA levels 1-7
+    confidence_score: int = Field(ge=1, le=100)
+    evidence_summary: str = Field(max_length=2000)
+    github_evidence_count: int = Field(default=0)  # Number of GitHub activities supporting this rating
+    recommended_next_level: int | None = Field(default=None, ge=1, le=7)
+    improvement_suggestions: str | None = Field(default=None, max_length=1000)
+
+
+class GitHubSkillRating(GitHubSkillRatingBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Analysis relationship
+    analysis_id: uuid.UUID = Field(foreign_key="contributoranalysis.id", nullable=False, ondelete="CASCADE")
+    analysis: ContributorAnalysis | None = Relationship()
+
+
+class GitHubSkillRatingPublic(GitHubSkillRatingBase):
+    id: uuid.UUID
+    generated_at: str
+
+
+# Response models for GitHub skill analysis APIs
+class GitHubSkillAnalysisResponse(SQLModel):
+    overall_assessment: str
+    skill_ratings: list[GitHubSkillRatingPublic]
+    strengths: list[str]
+    growth_areas: list[str]
+    learning_recommendations: list[str]
+    next_level_requirements: list[str]
+    confidence_score: int
+    last_updated: str
+
+
+class ContributorDetailedActivityResponse(SQLModel):
+    contributor: GitHubContributorPublic
+    activities: list[GitHubActivityPublic]
+    pull_requests: list[GitHubPullRequestPublic]
+    code_reviews: list[GitHubCodeReviewPublic]
+    issue_activities: list[GitHubIssueActivityPublic]
+    activity_summary: dict[str, Any]
+    period_analyzed: str
+    total_activities: int
+
+
+class SkillProgressResponse(SQLModel):
+    skill_id: str
+    skill_name: str
+    current_level: int
+    target_level: int
+    progress_percentage: float
+    recent_evidence: list[str]
+    recommended_actions: list[str]
+    estimated_timeline: str
+
+
+# DarwinBox Models
+class DarwinBoxEmployeeBase(SQLModel):
+    darwinbox_id: str = Field(max_length=255, index=True, unique=True)  # DarwinBox employee ID
+    employee_code: str | None = Field(default=None, max_length=100)  # Employee code
+    full_name: str = Field(max_length=255)
+    email: EmailStr = Field(max_length=255, index=True)
+    designation: str | None = Field(default=None, max_length=255)
+    department: str | None = Field(default=None, max_length=255)
+    location: str | None = Field(default=None, max_length=255)
+    reporting_manager_id: str | None = Field(default=None, max_length=255)
+    reporting_manager_name: str | None = Field(default=None, max_length=255)
+    date_of_joining: str | None = Field(default=None)  # ISO date string
+    employment_status: str = Field(default="active", max_length=50)  # active, inactive, terminated
+    phone_number: str | None = Field(default=None, max_length=50)
+    grade: str | None = Field(default=None, max_length=50)
+    business_unit: str | None = Field(default=None, max_length=255)
+    cost_center: str | None = Field(default=None, max_length=255)
+    is_manager: bool = Field(default=False)
+    employee_type: str | None = Field(default=None, max_length=50)  # full_time, part_time, contractor
+
+
+# Database model
+class DarwinBoxEmployee(DarwinBoxEmployeeBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_sync_at: str | None = Field(default=None)
+    synced_by_id: uuid.UUID | None = Field(foreign_key="user.id", nullable=True, ondelete="SET NULL")
+    
+    # Additional metadata from DarwinBox
+    raw_data: Any | None = Field(default=None, sa_column=Column(JSON))  # Store complete API response
+    
+    # Relationships
+    github_mapping: Optional["EmployeeGitHubMapping"] = Relationship(
+        back_populates="darwinbox_employee", 
+        cascade_delete=True,
+        sa_relationship_kwargs={"uselist": False}
+    )
+    managed_teams: list["TeamStructure"] = Relationship(
+        back_populates="manager",
+        sa_relationship_kwargs={"foreign_keys": "[TeamStructure.manager_id]"}
+    )
+
+
+# Public model for API responses
+class DarwinBoxEmployeePublic(DarwinBoxEmployeeBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    last_sync_at: str | None
+    has_github_mapping: bool = Field(default=False)
+    github_username: str | None = Field(default=None)
+    team_count: int = Field(default=0)
+
+
+class DarwinBoxEmployeesPublic(SQLModel):
+    data: list[DarwinBoxEmployeePublic]
+    count: int
+
+
+# Request models
+class DarwinBoxEmployeeCreate(SQLModel):
+    darwinbox_id: str = Field(min_length=1, max_length=255)
+    employee_code: str | None = Field(default=None, max_length=100)
+    full_name: str = Field(min_length=1, max_length=255)
+    email: EmailStr = Field(max_length=255)
+    designation: str | None = Field(default=None, max_length=255)
+    department: str | None = Field(default=None, max_length=255)
+    location: str | None = Field(default=None, max_length=255)
+    reporting_manager_id: str | None = Field(default=None, max_length=255)
+    reporting_manager_name: str | None = Field(default=None, max_length=255)
+    date_of_joining: str | None = Field(default=None)
+    employment_status: str = Field(default="active", regex="^(active|inactive|terminated)$")
+    phone_number: str | None = Field(default=None, max_length=50)
+    grade: str | None = Field(default=None, max_length=50)
+    business_unit: str | None = Field(default=None, max_length=255)
+    cost_center: str | None = Field(default=None, max_length=255)
+    is_manager: bool = Field(default=False)
+    employee_type: str | None = Field(default=None, regex="^(full_time|part_time|contractor)$")
+    raw_data: Any | None = Field(default=None)
+
+
+class DarwinBoxEmployeeUpdate(SQLModel):
+    email: EmailStr | None = Field(default=None, max_length=255)
+    full_name: str | None = Field(default=None, max_length=255)
+    employee_code: str | None = Field(default=None, max_length=100)
+    designation: str | None = Field(default=None, max_length=255)
+    department: str | None = Field(default=None, max_length=255)
+    location: str | None = Field(default=None, max_length=255)
+    reporting_manager_id: str | None = Field(default=None, max_length=255)
+    reporting_manager_name: str | None = Field(default=None, max_length=255)
+    date_of_joining: str | None = Field(default=None)
+    employment_status: str | None = Field(default=None, regex="^(active|inactive|terminated)$")
+    phone_number: str | None = Field(default=None, max_length=50)
+    grade: str | None = Field(default=None, max_length=50)
+    business_unit: str | None = Field(default=None, max_length=255)
+    cost_center: str | None = Field(default=None, max_length=255)
+    is_manager: bool | None = Field(default=None)
+    employee_type: str | None = Field(default=None, regex="^(full_time|part_time|contractor)$")
+    raw_data: Any | None = Field(default=None)
+
+
+# Employee to GitHub Mapping Models
+class EmployeeGitHubMappingBase(SQLModel):
+    github_username: str = Field(max_length=255, index=True)  # GitHub username
+    github_id: int | None = Field(default=None, index=True)  # GitHub numeric ID
+    mapping_verified: bool = Field(default=False)  # Whether the mapping has been verified
+    verification_method: str | None = Field(default=None, max_length=100)  # How it was verified
+    verification_notes: str | None = Field(default=None, max_length=500)  # Additional notes
+
+
+# Database model
+class EmployeeGitHubMapping(EmployeeGitHubMappingBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # DarwinBox employee relationship
+    darwinbox_employee_id: uuid.UUID = Field(
+        foreign_key="darwinboxemployee.id", 
+        nullable=False, 
+        ondelete="CASCADE",
+        unique=True
+    )
+    darwinbox_employee: DarwinBoxEmployee | None = Relationship(back_populates="github_mapping")
+    
+    # Who created this mapping
+    mapped_by_id: uuid.UUID = Field(
+        foreign_key="user.id", 
+        nullable=False, 
+        ondelete="CASCADE"
+    )
+    mapped_by: User | None = Relationship(
+        sa_relationship_kwargs={"foreign_keys": "[EmployeeGitHubMapping.mapped_by_id]"}
+    )
+
+
+# Public model for API responses
+class EmployeeGitHubMappingPublic(EmployeeGitHubMappingBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    verified_at: str | None
+    darwinbox_employee_id: uuid.UUID
+    github_user_id: uuid.UUID
+    mapped_by_id: uuid.UUID
+    darwinbox_employee_name: str = Field(max_length=255)
+    github_username: str = Field(max_length=255)
+    mapped_by_name: str = Field(max_length=255)
+
+
+class EmployeeGitHubMappingsPublic(SQLModel):
+    data: list[EmployeeGitHubMappingPublic]
+    count: int
+
+
+# Request models
+class EmployeeGitHubMappingCreate(SQLModel):
+    darwinbox_employee_id: uuid.UUID
+    github_user_id: uuid.UUID
+    mapping_method: str = Field(regex="^(manual|auto_email|auto_name|admin_assigned)$")
+    mapping_confidence: int | None = Field(default=None, ge=1, le=100)
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class EmployeeGitHubMappingUpdate(SQLModel):
+    mapping_status: str | None = Field(default=None, regex="^(active|pending|inactive)$")
+    mapping_confidence: int | None = Field(default=None, ge=1, le=100)
+    notes: str | None = Field(default=None, max_length=1000)
+    verified_at: str | None = Field(default=None)
+
+
+# Team Structure Models
+class TeamStructureBase(SQLModel):
+    team_name: str = Field(max_length=255, index=True)
+    team_code: str | None = Field(default=None, max_length=100)
+    department: str = Field(max_length=255, index=True)
+    division: str | None = Field(default=None, max_length=255)
+    team_size: int = Field(default=0, ge=0)
+    team_type: str = Field(default="functional", max_length=50)  # functional, project, cross_functional
+    is_active: bool = Field(default=True)
+    parent_team_id: uuid.UUID | None = Field(default=None)  # For hierarchical teams
+
+
+# Database model
+class TeamStructure(TeamStructureBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Manager relationship (DarwinBox employee)
+    manager_id: uuid.UUID | None = Field(
+        foreign_key="darwinboxemployee.id", 
+        nullable=True, 
+        ondelete="SET NULL"
+    )
+    manager: DarwinBoxEmployee | None = Relationship(
+        back_populates="managed_teams",
+        sa_relationship_kwargs={"foreign_keys": "[TeamStructure.manager_id]"}
+    )
+    
+    # Created by relationship
+    created_by_id: uuid.UUID = Field(
+        foreign_key="user.id", 
+        nullable=False, 
+        ondelete="CASCADE"
+    )
+    created_by: User | None = Relationship()
+    
+    # Team metadata
+    team_metadata: Any | None = Field(default=None, sa_column=Column(JSON))  # Additional team info
+
+
+# Public model for API responses
+class TeamStructurePublic(TeamStructureBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    manager_name: str | None = Field(default=None, max_length=255)
+    created_by_name: str = Field(max_length=255)
+
+
+class TeamStructuresPublic(SQLModel):
+    data: list[TeamStructurePublic]
+    count: int
+
+
+# Request models
+class TeamStructureCreate(SQLModel):
+    team_name: str = Field(min_length=1, max_length=255)
+    team_code: str | None = Field(default=None, max_length=100)
+    department: str = Field(min_length=1, max_length=255)
+    division: str | None = Field(default=None, max_length=255)
+    team_type: str = Field(default="functional", regex="^(functional|project|cross_functional)$")
+    manager_id: uuid.UUID | None = Field(default=None)
+    parent_team_id: uuid.UUID | None = Field(default=None)
+    team_metadata: Any | None = Field(default=None)
+
+
+class TeamStructureUpdate(SQLModel):
+    team_name: str | None = Field(default=None, max_length=255)
+    team_code: str | None = Field(default=None, max_length=100)
+    department: str | None = Field(default=None, max_length=255)
+    division: str | None = Field(default=None, max_length=255)
+    team_size: int | None = Field(default=None, ge=0)
+    team_type: str | None = Field(default=None, regex="^(functional|project|cross_functional)$")
+    is_active: bool | None = Field(default=None)
+    manager_id: uuid.UUID | None = Field(default=None)
+    parent_team_id: uuid.UUID | None = Field(default=None)
+    team_metadata: Any | None = Field(default=None)
+
+
+# DarwinBox Sync Status Model
+class DarwinBoxSyncStatus(SQLModel):
+    sync_type: str  # employees, teams, full
+    status: str  # running, completed, failed
+    started_at: str
+    completed_at: str | None
+    total_records: int
+    processed_records: int
+    failed_records: int
+    error_message: str | None
+    sync_metadata: dict[str, Any]
+
+
+# Response models for DarwinBox APIs
+class DarwinBoxEmployeeAnalytics(SQLModel):
+    total_employees: int
+    active_employees: int
+    departments: dict[str, int]
+    locations: dict[str, int]
+    employment_types: dict[str, int]
+    github_mapping_stats: dict[str, int]
+    team_distribution: dict[str, int]
+
+
+class EmployeeGitHubMappingAnalytics(SQLModel):
+    total_mappings: int
+    mapping_methods: dict[str, int]
+    mapping_confidence_distribution: dict[str, int]
+    unmapped_employees: int
+    pending_verifications: int
+    mapping_coverage_percentage: float
+
+
+class TeamHierarchyResponse(SQLModel):
+    team: TeamStructurePublic
+    parent_team: TeamStructurePublic | None
+    sub_teams: list[TeamStructurePublic]
+    team_members: list[DarwinBoxEmployeePublic]
+    total_members: int
+
+
+# DarwinBox Sync Request/Response Models
+class DarwinBoxSyncRequest(SQLModel):
+    sync_type: str = Field(regex="^(employees|teams|mappings|full)$")  # Type of sync to perform
+    force_update: bool = Field(default=False)  # Force update even if recently synced
+    department_filter: str | None = Field(default=None, max_length=255)  # Optional department filter
+    location_filter: str | None = Field(default=None, max_length=255)  # Optional location filter
+    include_inactive: bool = Field(default=False)  # Include inactive employees/teams
+    batch_size: int = Field(default=100, ge=10, le=1000)  # Number of records to process per batch
+    dry_run: bool = Field(default=False)  # Preview changes without committing
+    metadata: dict[str, Any] | None = Field(default=None)  # Additional sync parameters
+
+
+class DarwinBoxSyncResponse(SQLModel):
+    sync_id: str = Field(max_length=100)  # Unique ID for this sync operation
+    status: str = Field(regex="^(initiated|in_progress|completed|failed|cancelled)$")
+    message: str
+    sync_type: str
+    started_at: str
+    estimated_completion_time: str | None = Field(default=None)
+    total_records_to_process: int | None = Field(default=None)
+    records_processed: int = Field(default=0)
+    records_created: int = Field(default=0)
+    records_updated: int = Field(default=0)
+    records_failed: int = Field(default=0)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    dry_run: bool = Field(default=False)
+    sync_details: dict[str, Any] = Field(default_factory=dict)
+
+
+# Employee Search Parameters Model
+class EmployeeSearchParams(SQLModel):
+    search_query: str | None = Field(default=None, max_length=255)  # Search by name, email, or employee_id
+    department: str | None = Field(default=None, max_length=255)
+    location: str | None = Field(default=None, max_length=255)
+    office_location: str | None = Field(default=None, max_length=255)
+    employment_status: str | None = Field(default=None, regex="^(active|inactive|terminated|all)$")
+    employment_type: str | None = Field(default=None, regex="^(full_time|part_time|contractor|all)$")
+    has_github_mapping: bool | None = Field(default=None)  # Filter by GitHub mapping status
+    manager_employee_id: str | None = Field(default=None, max_length=255)  # Filter by reporting manager
+    grade: str | None = Field(default=None, max_length=50)
+    business_unit: str | None = Field(default=None, max_length=255)
+    date_of_joining_from: str | None = Field(default=None)  # ISO date string
+    date_of_joining_to: str | None = Field(default=None)  # ISO date string
+    sort_by: str = Field(default="full_name", regex="^(full_name|employee_id|date_of_joining|department|updated_at)$")
+    sort_order: str = Field(default="asc", regex="^(asc|desc)$")
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    include_custom_attributes: bool = Field(default=False)  # Include custom attributes in response
+
+
+# Team with Skills Response Model
+class TeamWithSkillsResponse(SQLModel):
+    team: TeamStructurePublic
+    manager: DarwinBoxEmployeePublic | None = Field(default=None)
+    team_members: list[DarwinBoxEmployeePublic] = Field(default_factory=list)
+    total_members: int = Field(default=0)
+    skill_summary: dict[str, Any] = Field(default_factory=dict)  # Aggregated team skills
+    skill_distribution: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)  # Skills by category
+    skill_gaps: list[dict[str, Any]] = Field(default_factory=list)  # Identified skill gaps
+    top_skills: list[dict[str, Any]] = Field(default_factory=list)  # Most common skills in team
+    rare_skills: list[dict[str, Any]] = Field(default_factory=list)  # Unique/rare skills in team
+    skill_coverage: dict[str, float] = Field(default_factory=dict)  # Percentage coverage by skill category
+    recommendations: list[str] = Field(default_factory=list)  # Training/hiring recommendations
+    last_analyzed_at: str | None = Field(default=None)
+
+
+# Batch Mapping Review Models
+class MappingReviewItem(SQLModel):
+    """Single mapping to review/approve"""
+    darwinbox_employee_id: uuid.UUID
+    github_username: str
+    action: str = Field(regex="^(approve|reject|skip)$")
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class BatchMappingReview(SQLModel):
+    """Batch review of multiple mapping suggestions"""
+    mappings: list[MappingReviewItem]
+    auto_verify: bool = Field(default=True, description="Automatically mark approved mappings as verified")
+
+
+class BatchMappingReviewResponse(SQLModel):
+    """Response from batch mapping review"""
+    total_reviewed: int
+    approved: int
+    rejected: int
+    skipped: int
+    errors: list[dict[str, str]] = Field(default_factory=list)

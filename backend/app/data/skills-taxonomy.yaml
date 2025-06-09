@@ -1,0 +1,506 @@
+# Amazon-Aligned Software & Data Science Skills Taxonomy
+# Based on SFIA 9.0 Framework with Amazon Career Ladder Progression
+#
+# This taxonomy focuses specifically on Software Engineering and Data Science roles
+# aligned with Amazon's SDE and DS career progression (L4-L7+)
+#
+# Amazon Levels to SFIA Mapping:
+# L4 (SDE I / DS I) → SFIA Levels 1-2 (Follow/Assist)
+# L5 (SDE II / DS II) → SFIA Levels 3-4 (Apply/Enable) 
+# L6 (Senior SDE / DS III) → SFIA Levels 5-6 (Ensure/Advise/Initiate)
+# L7+ (Principal / L7+) → SFIA Level 7 (Set Strategy/Inspire)
+
+version: "9.0"
+last_updated: "2025-06-08"
+schema_version: "SFIA-9.0-Amazon-Focused"
+framework_source: "Skills Framework for the Information Age (SFIA) 9.0 - Amazon Career Ladder Aligned"
+framework_url: "https://sfia-online.org/en/sfia-9"
+
+# SFIA 7-Level Proficiency Scale aligned with Amazon Career Progression
+skill_levels:
+  level_1:
+    name: "Follow"
+    description: "Follow guidance and instruction, maintain awareness of developing technologies"
+    value: 1
+    sfia_level: 1
+    amazon_equivalent: "L4 Entry (SDE I / DS I - New Grad)"
+    responsibility: "Works under close guidance, handles well-defined tasks"
+    
+  level_2:
+    name: "Assist"
+    description: "Assist and support others, apply knowledge with guidance"
+    value: 2
+    sfia_level: 2
+    amazon_equivalent: "L4 Experienced (SDE I / DS I - 1-2 years)"
+    responsibility: "Works under guidance with some discretion in supervised activities"
+    
+  level_3:
+    name: "Apply"
+    description: "Apply knowledge and experience to complete tasks with limited guidance"
+    value: 3
+    sfia_level: 3
+    amazon_equivalent: "L5 Junior (SDE II / DS II - 3-4 years)"
+    responsibility: "Works under general direction within defined guidelines"
+    
+  level_4:
+    name: "Enable"
+    description: "Enable delivery and take ownership of significant work areas"
+    value: 4
+    sfia_level: 4
+    amazon_equivalent: "L5 Senior (SDE II / DS II - 5-6 years)"
+    responsibility: "Takes ownership of significant work areas with minimal guidance"
+    
+  level_5:
+    name: "Ensure/Advise"
+    description: "Ensure delivery and provide specialist advice to enable others"
+    value: 5
+    sfia_level: 5
+    amazon_equivalent: "L6 Senior (Senior SDE / DS III - 7-10 years)"
+    responsibility: "Ensures delivery of complex work streams and advises others"
+    
+  level_6:
+    name: "Initiate/Influence"
+    description: "Initiate and lead change, influence strategic direction"
+    value: 6
+    sfia_level: 6
+    amazon_equivalent: "L6 Staff (Senior SDE / DS III - 10+ years)"
+    responsibility: "Initiates and leads change within business area"
+    
+  level_7:
+    name: "Set Strategy/Inspire"
+    description: "Set strategy, inspire across the enterprise"
+    value: 7
+    sfia_level: 7
+    amazon_equivalent: "L7+ (Principal SDE / L7+ DS - Distinguished)"
+    responsibility: "Sets strategy and inspires across organizational boundaries"
+
+# Core Categories focused on Software & Data Science
+categories:
+  software_engineering:
+    name: "Software Engineering"
+    description: "Core software development skills aligned with Amazon SDE career ladder"
+    sfia_category: "Development and Implementation"
+    amazon_focus: "SDE Career Track"
+    subcategories:
+      programming_fundamentals:
+        name: "Programming Fundamentals"
+        skills:
+          programming_software_development:
+            id: "PROG"
+            name: "Programming/Software Development"
+            description: "Planning, designing, coding, debugging and testing software"
+            keywords: ["programming", "software development", "coding", "debugging", "testing"]
+            levels: [1, 2, 3, 4, 5, 6, 7]
+            sfia_code: "PROG"
+            category: "software_engineering"
+            subcategory: "programming_fundamentals"
+            amazon_skills:
+              L4: ["Basic programming", "Code reviews", "Unit testing", "Debugging"]
+              L5: ["Design patterns", "Code quality", "Performance optimization", "Architecture awareness"]
+              L6: ["System design", "Technical leadership", "Mentoring", "Cross-team collaboration"]
+              L7: ["Technical strategy", "Innovation", "Industry influence", "Organizational impact"]
+          
+          java_programming:
+            id: "JAVA"
+            name: "Java Programming"
+            description: "Development using Java programming language and ecosystem"
+            keywords: ["java", "spring", "maven", "gradle", "enterprise", "jvm"]
+            levels: [1, 2, 3, 4, 5, 6]
+            sfia_code: "PROG"
+            parent_skill: "PROG"
+            category: "software_engineering"
+            subcategory: "programming_fundamentals"
+            amazon_priority: "high"
+            
+          python_programming:
+            id: "PYTH"
+            name: "Python Programming"
+            description: "Development using Python programming language"
+            keywords: ["python", "django", "flask", "fastapi", "data science", "automation"]
+            levels: [1, 2, 3, 4, 5, 6]
+            sfia_code: "PROG"
+            parent_skill: "PROG"
+            category: "software_engineering"
+            subcategory: "programming_fundamentals"
+            amazon_priority: "high"
+            
+          cpp_programming:
+            id: "CPPL"
+            name: "C++ Programming"
+            description: "Development using C++ programming language"
+            keywords: ["c++", "performance", "systems", "memory management", "optimization"]
+            levels: [1, 2, 3, 4, 5, 6]
+            sfia_code: "PROG"
+            parent_skill: "PROG"
+            category: "software_engineering"
+            subcategory: "programming_fundamentals"
+            amazon_priority: "medium"
+
+      system_design:
+        name: "System Design & Architecture"
+        skills:
+          systems_design:
+            id: "SYSD"
+            name: "Systems Design"
+            description: "The specification and design of information systems"
+            keywords: ["systems design", "specification", "design patterns", "architecture"]
+            levels: [1, 2, 3, 4, 5, 6, 7]
+            sfia_code: "SYSD"
+            category: "software_engineering"
+            subcategory: "system_design"
+            amazon_skills:
+              L5: ["Component design", "API design", "Database design"]
+              L6: ["Distributed systems", "Scalability", "Reliability", "Performance"]
+              L7: ["Enterprise architecture", "Strategic technology decisions"]
+              
+          solution_architecture:
+            id: "ARCH"
+            name: "Solution Architecture"
+            description: "The design and implementation of solutions to meet business requirements"
+            keywords: ["architecture", "solution design", "technical leadership", "patterns"]
+            levels: [4, 5, 6, 7]
+            sfia_code: "ARCH"
+            category: "software_engineering"
+            subcategory: "system_design"
+            amazon_skills:
+              L5: ["Solution design", "Technology selection"]
+              L6: ["Architecture governance", "Technical roadmaps", "Cross-system integration"]
+              L7: ["Enterprise strategy", "Innovation leadership", "Industry influence"]
+
+      cloud_aws:
+        name: "Amazon Web Services (AWS)"
+        skills:
+          aws_cloud_platform:
+            id: "AWSP"
+            name: "AWS Cloud Platform"
+            description: "Design, implementation and management of AWS cloud solutions"
+            keywords: ["aws", "cloud", "ec2", "s3", "lambda", "rds", "dynamodb"]
+            levels: [1, 2, 3, 4, 5, 6, 7]
+            sfia_code: "CLDP"
+            parent_skill: "CLDP"
+            category: "software_engineering"
+            subcategory: "cloud_aws"
+            amazon_priority: "critical"
+            amazon_skills:
+              L4: ["Basic AWS services", "EC2", "S3", "RDS"]
+              L5: ["Advanced services", "Lambda", "API Gateway", "CloudFormation"]
+              L6: ["Multi-service architecture", "Cost optimization", "Security best practices"]
+              L7: ["AWS strategy", "Innovation with new services", "Technical evangelism"]
+              
+          aws_infrastructure:
+            id: "AWSI"
+            name: "AWS Infrastructure"
+            description: "Infrastructure as Code and AWS operations management"
+            keywords: ["cloudformation", "terraform", "infrastructure", "devops", "automation"]
+            levels: [2, 3, 4, 5, 6]
+            sfia_code: "ITOP"
+            parent_skill: "ITOP"
+            category: "software_engineering"
+            subcategory: "cloud_aws"
+            amazon_priority: "high"
+
+  data_science:
+    name: "Data Science & ML Engineering"
+    description: "Data science and machine learning skills aligned with Amazon DS career ladder"
+    sfia_category: "Development and Implementation"
+    amazon_focus: "DS Career Track"
+    subcategories:
+      data_analysis:
+        name: "Data Analysis & Statistics"
+        skills:
+          data_analysis:
+            id: "DAAN"
+            name: "Data Analysis"
+            description: "Collection, processing and analysis of data to extract insights"
+            keywords: ["data analysis", "statistics", "insights", "reporting", "visualization"]
+            levels: [1, 2, 3, 4, 5, 6, 7]
+            sfia_code: "DTAN"
+            parent_skill: "DTAN"
+            category: "data_science"
+            subcategory: "data_analysis"
+            amazon_skills:
+              L4: ["Basic statistics", "Data cleaning", "SQL queries", "Excel/Jupyter"]
+              L5: ["Advanced analytics", "Statistical modeling", "A/B testing", "Visualization"]
+              L6: ["Complex modeling", "Business insights", "Strategic recommendations"]
+              L7: ["Data strategy", "Organization-wide analytics", "Innovation leadership"]
+              
+          statistical_modeling:
+            id: "STAT"
+            name: "Statistical Modeling"
+            description: "Design and implementation of statistical models for data analysis"
+            keywords: ["statistics", "modeling", "hypothesis testing", "regression", "bayesian"]
+            levels: [2, 3, 4, 5, 6, 7]
+            sfia_code: "DTAN"
+            parent_skill: "DTAN"
+            category: "data_science"
+            subcategory: "data_analysis"
+            amazon_priority: "high"
+
+      machine_learning:
+        name: "Machine Learning & AI"
+        skills:
+          machine_learning:
+            id: "MLEA"
+            name: "Machine Learning"
+            description: "Design, development and deployment of machine learning models"
+            keywords: ["machine learning", "ml", "algorithms", "models", "training", "inference"]
+            levels: [2, 3, 4, 5, 6, 7]
+            sfia_code: "PROG"
+            parent_skill: "PROG"
+            category: "data_science"
+            subcategory: "machine_learning"
+            amazon_skills:
+              L4: ["Basic ML algorithms", "Scikit-learn", "Model evaluation", "Feature engineering"]
+              L5: ["Advanced algorithms", "Deep learning", "MLOps", "Model optimization"]
+              L6: ["ML system design", "Research & development", "Technical leadership"]
+              L7: ["ML strategy", "Innovation", "Industry influence", "Research direction"]
+              
+          deep_learning:
+            id: "DEEP"
+            name: "Deep Learning"
+            description: "Neural networks and deep learning model development"
+            keywords: ["deep learning", "neural networks", "tensorflow", "pytorch", "nlp", "computer vision"]
+            levels: [3, 4, 5, 6, 7]
+            sfia_code: "PROG"
+            parent_skill: "MLEA"
+            category: "data_science"
+            subcategory: "machine_learning"
+            amazon_priority: "high"
+            
+          natural_language_processing:
+            id: "NLPS"
+            name: "Natural Language Processing"
+            description: "Processing and understanding of human language by computers"
+            keywords: ["nlp", "text analysis", "language models", "transformers", "bert", "gpt"]
+            levels: [3, 4, 5, 6, 7]
+            sfia_code: "PROG"
+            parent_skill: "MLEA"
+            category: "data_science"
+            subcategory: "machine_learning"
+            amazon_priority: "high"
+
+      data_engineering:
+        name: "Data Engineering & Infrastructure"
+        skills:
+          data_engineering:
+            id: "DENG"
+            name: "Data Engineering"
+            description: "Design and implementation of data pipelines and infrastructure"
+            keywords: ["data engineering", "etl", "pipelines", "big data", "streaming", "warehousing"]
+            levels: [2, 3, 4, 5, 6, 7]
+            sfia_code: "PROG"
+            parent_skill: "PROG"
+            category: "data_science"
+            subcategory: "data_engineering"
+            amazon_skills:
+              L4: ["Basic ETL", "SQL", "Data cleaning", "Batch processing"]
+              L5: ["Advanced pipelines", "Streaming", "Data modeling", "Performance optimization"]
+              L6: ["Data architecture", "Infrastructure design", "Team leadership"]
+              L7: ["Data strategy", "Platform innovation", "Organizational impact"]
+              
+          big_data_technologies:
+            id: "BDAT"
+            name: "Big Data Technologies"
+            description: "Technologies for processing and analyzing large-scale datasets"
+            keywords: ["spark", "hadoop", "kafka", "elasticsearch", "redshift", "emr"]
+            levels: [3, 4, 5, 6, 7]
+            sfia_code: "PROG"
+            parent_skill: "DENG"
+            category: "data_science"
+            subcategory: "data_engineering"
+            amazon_priority: "high"
+
+  leadership_skills:
+    name: "Technical Leadership"
+    description: "Leadership and management skills for technical career progression"
+    sfia_category: "People and Skills"
+    amazon_focus: "L6+ Leadership Track"
+    subcategories:
+      technical_leadership:
+        name: "Technical Leadership"
+        skills:
+          technical_leadership:
+            id: "TMLP"
+            name: "Technical Leadership"
+            description: "Leading technical teams and driving technical excellence"
+            keywords: ["leadership", "mentoring", "technical direction", "team management"]
+            levels: [4, 5, 6, 7]
+            sfia_code: "PELP"
+            parent_skill: "PELP"
+            category: "leadership_skills"
+            subcategory: "technical_leadership"
+            amazon_skills:
+              L5: ["Code reviews", "Technical mentoring", "Best practices"]
+              L6: ["Team leadership", "Technical roadmaps", "Cross-team collaboration"]
+              L7: ["Strategic direction", "Organizational influence", "Industry leadership"]
+              
+          project_management:
+            id: "PRMG"
+            name: "Project Management"
+            description: "Planning, executing and delivering projects on time and within budget"
+            keywords: ["project management", "agile", "scrum", "planning", "execution", "delivery"]
+            levels: [3, 4, 5, 6, 7]
+            sfia_code: "PRMG"
+            category: "leadership_skills"
+            subcategory: "technical_leadership"
+
+# Amazon-specific skill pathways for career progression
+skill_pathways:
+  amazon_sde_track:
+    name: "Amazon SDE Career Track"
+    description: "Software Engineering progression from L4 to L7+ at Amazon"
+    sfia_aligned: true
+    amazon_levels:
+      L4_SDE_I:
+        name: "SDE I (L4)"
+        tenure: "0-3 years"
+        sfia_levels: [1, 2, 3]
+        core_skills:
+          - "PROG"  # Programming fundamentals
+          - "JAVA"  # Java programming
+          - "PYTH"  # Python programming
+          - "AWSP"  # Basic AWS
+        development_focus: ["Code quality", "Testing", "Debugging", "Learning"]
+        
+      L5_SDE_II:
+        name: "SDE II (L5)"
+        tenure: "3-7 years"
+        sfia_levels: [3, 4, 5]
+        core_skills:
+          - "SYSD"  # Systems design
+          - "AWSP"  # Advanced AWS
+          - "ARCH"  # Solution architecture
+          - "PRMG"  # Project management
+        development_focus: ["System design", "Architecture", "Leadership", "Ownership"]
+        
+      L6_Senior_SDE:
+        name: "Senior SDE (L6)"
+        tenure: "7-12 years"
+        sfia_levels: [5, 6]
+        core_skills:
+          - "ARCH"  # Advanced architecture
+          - "TMLP"  # Technical leadership
+          - "SYSD"  # Complex systems
+          - "AWSP"  # AWS expertise
+        development_focus: ["Technical leadership", "Strategy", "Mentoring", "Innovation"]
+        
+      L7_Principal_SDE:
+        name: "Principal SDE (L7+)"
+        tenure: "12+ years"
+        sfia_levels: [6, 7]
+        core_skills:
+          - "ARCH"  # Enterprise architecture
+          - "TMLP"  # Senior leadership
+          - "PRMG"  # Strategic management
+        development_focus: ["Strategic direction", "Organizational impact", "Industry influence"]
+
+  amazon_ds_track:
+    name: "Amazon Data Science Career Track"
+    description: "Data Science progression from L4 to L7+ at Amazon"
+    sfia_aligned: true
+    amazon_levels:
+      L4_DS_I:
+        name: "DS I (L4)"
+        tenure: "0-3 years"
+        sfia_levels: [1, 2, 3]
+        core_skills:
+          - "DAAN"  # Data analysis
+          - "STAT"  # Statistics
+          - "PYTH"  # Python for data science
+          - "MLEA"  # Basic ML
+        development_focus: ["Statistical analysis", "Data exploration", "Basic modeling", "Tools mastery"]
+        
+      L5_DS_II:
+        name: "DS II (L5)"
+        tenure: "3-7 years"
+        sfia_levels: [3, 4, 5]
+        core_skills:
+          - "MLEA"  # Advanced ML
+          - "DENG"  # Data engineering
+          - "DEEP"  # Deep learning
+          - "AWSP"  # AWS for ML
+        development_focus: ["Advanced modeling", "MLOps", "Business impact", "Technical depth"]
+        
+      L6_DS_III:
+        name: "DS III (L6)"
+        tenure: "7-12 years"
+        sfia_levels: [5, 6]
+        core_skills:
+          - "NLPS"  # Advanced AI/NLP
+          - "TMLP"  # Technical leadership
+          - "DENG"  # Data architecture
+          - "ARCH"  # ML system design
+        development_focus: ["Research & development", "Technical leadership", "Strategic projects"]
+        
+      L7_Principal_DS:
+        name: "Principal DS (L7+)"
+        tenure: "12+ years"
+        sfia_levels: [6, 7]
+        core_skills:
+          - "TMLP"  # Senior leadership
+          - "ARCH"  # ML strategy
+          - "DAAN"  # Business strategy
+        development_focus: ["ML strategy", "Organizational impact", "Research direction", "Innovation"]
+
+# Validation rules for Amazon-focused taxonomy
+validation_rules:
+  required_fields: ["id", "name", "description", "levels", "sfia_code", "category", "subcategory"]
+  level_progression: [1, 2, 3, 4, 5, 6, 7]
+  amazon_focus:
+    enforce_amazon_alignment: true
+    required_amazon_skills: true
+    career_progression_validation: true
+  sfia_compliance:
+    enforce_sfia_codes: true
+    allow_custom_extensions: true
+    require_parent_skill_for_extensions: true
+  id_format: "^[A-Z]{3,4}$"
+  max_levels_per_skill: 7
+  category_validation:
+    enforce_focused_categories: true
+    allowed_categories:
+      - "software_engineering"
+      - "data_science"
+      - "leadership_skills"
+
+# Custom skill mappings to SFIA standards
+custom_skill_mappings:
+  JAVA: "PROG"  # Java maps to Programming
+  PYTH: "PROG"  # Python maps to Programming
+  CPPL: "PROG"  # C++ maps to Programming
+  AWSP: "CLDP"  # AWS Platform maps to Cloud Platform
+  AWSI: "ITOP"  # AWS Infrastructure maps to IT Operations
+  DAAN: "DTAN"  # Data Analysis maps to Data Analysis
+  STAT: "DTAN"  # Statistics maps to Data Analysis
+  MLEA: "PROG"  # Machine Learning maps to Programming
+  DEEP: "PROG"  # Deep Learning maps to Programming
+  NLPS: "PROG"  # NLP maps to Programming
+  DENG: "PROG"  # Data Engineering maps to Programming
+  BDAT: "PROG"  # Big Data maps to Programming
+  TMLP: "PELP"  # Technical Leadership maps to People Leadership
+
+# Amazon Leadership Principles alignment
+amazon_leadership_principles:
+  customer_obsession:
+    related_skills: ["DAAN", "MLEA", "ARCH", "SYSD"]
+    description: "Leaders start with the customer and work backwards"
+    
+  ownership:
+    related_skills: ["PROG", "TMLP", "PRMG", "ARCH"]
+    description: "Leaders are owners who act on behalf of the entire company"
+    
+  invent_and_simplify:
+    related_skills: ["ARCH", "SYSD", "MLEA", "DEEP"]
+    description: "Leaders expect and require innovation and invention from their teams"
+    
+  are_right_a_lot:
+    related_skills: ["DAAN", "STAT", "ARCH", "TMLP"]
+    description: "Leaders are right a lot and have strong business judgment"
+    
+  learn_and_be_curious:
+    related_skills: ["ALL"]
+    description: "Leaders are never done learning and always seek to improve themselves"
+    
+  hire_and_develop_the_best:
+    related_skills: ["TMLP", "PELP", "PRMG"]
+    description: "Leaders raise the performance bar with every hire and promotion"

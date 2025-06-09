@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = ""
+    
+    # Test database configuration
+    TEST_DATABASE_URL: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -99,6 +102,14 @@ class Settings(BaseSettings):
     GITHUB_CLIENT_ID: str | None = None
     GITHUB_CLIENT_SECRET: str | None = None
     GITHUB_REDIRECT_URI: str | None = None
+    
+    # DarwinBox Configuration
+    DARWINBOX_BASE_URL: str = "https://interviewbit.darwinbox.in"
+    DARWINBOX_API_KEY: str | None = None
+    DARWINBOX_DATASET_KEY: str | None = None
+    DARWINBOX_BASIC_AUTH: str | None = None
+    DARWINBOX_USERNAME: str | None = None
+    DARWINBOX_PASSWORD: str | None = None
 
     def _check_default_secret(self, var_name: str, value: str | None) -> None:
         if value == "changethis":
