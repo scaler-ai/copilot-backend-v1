@@ -987,3 +987,363 @@ class SkillProgressResponse(SQLModel):
     recent_evidence: list[str]
     recommended_actions: list[str]
     estimated_timeline: str
+
+
+# DarwinBox Models
+class DarwinBoxEmployeeBase(SQLModel):
+    darwinbox_id: str = Field(max_length=255, index=True, unique=True)  # DarwinBox employee ID
+    employee_code: str | None = Field(default=None, max_length=100)  # Employee code
+    full_name: str = Field(max_length=255)
+    email: EmailStr = Field(max_length=255, index=True)
+    designation: str | None = Field(default=None, max_length=255)
+    department: str | None = Field(default=None, max_length=255)
+    location: str | None = Field(default=None, max_length=255)
+    reporting_manager_id: str | None = Field(default=None, max_length=255)
+    reporting_manager_name: str | None = Field(default=None, max_length=255)
+    date_of_joining: str | None = Field(default=None)  # ISO date string
+    employment_status: str = Field(default="active", max_length=50)  # active, inactive, terminated
+    phone_number: str | None = Field(default=None, max_length=50)
+    grade: str | None = Field(default=None, max_length=50)
+    business_unit: str | None = Field(default=None, max_length=255)
+    cost_center: str | None = Field(default=None, max_length=255)
+    is_manager: bool = Field(default=False)
+    employee_type: str | None = Field(default=None, max_length=50)  # full_time, part_time, contractor
+
+
+# Database model
+class DarwinBoxEmployee(DarwinBoxEmployeeBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_sync_at: str | None = Field(default=None)
+    synced_by_id: uuid.UUID | None = Field(foreign_key="user.id", nullable=True, ondelete="SET NULL")
+    
+    # Additional metadata from DarwinBox
+    raw_data: Any | None = Field(default=None, sa_column=Column(JSON))  # Store complete API response
+    
+    # Relationships
+    github_mapping: Optional["EmployeeGitHubMapping"] = Relationship(
+        back_populates="darwinbox_employee", 
+        cascade_delete=True,
+        sa_relationship_kwargs={"uselist": False}
+    )
+    managed_teams: list["TeamStructure"] = Relationship(
+        back_populates="manager",
+        sa_relationship_kwargs={"foreign_keys": "[TeamStructure.manager_id]"}
+    )
+
+
+# Public model for API responses
+class DarwinBoxEmployeePublic(DarwinBoxEmployeeBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    last_sync_at: str | None
+    has_github_mapping: bool = Field(default=False)
+    github_username: str | None = Field(default=None)
+    team_count: int = Field(default=0)
+
+
+class DarwinBoxEmployeesPublic(SQLModel):
+    data: list[DarwinBoxEmployeePublic]
+    count: int
+
+
+# Request models
+class DarwinBoxEmployeeCreate(SQLModel):
+    darwinbox_id: str = Field(min_length=1, max_length=255)
+    employee_code: str | None = Field(default=None, max_length=100)
+    full_name: str = Field(min_length=1, max_length=255)
+    email: EmailStr = Field(max_length=255)
+    designation: str | None = Field(default=None, max_length=255)
+    department: str | None = Field(default=None, max_length=255)
+    location: str | None = Field(default=None, max_length=255)
+    reporting_manager_id: str | None = Field(default=None, max_length=255)
+    reporting_manager_name: str | None = Field(default=None, max_length=255)
+    date_of_joining: str | None = Field(default=None)
+    employment_status: str = Field(default="active", regex="^(active|inactive|terminated)$")
+    phone_number: str | None = Field(default=None, max_length=50)
+    grade: str | None = Field(default=None, max_length=50)
+    business_unit: str | None = Field(default=None, max_length=255)
+    cost_center: str | None = Field(default=None, max_length=255)
+    is_manager: bool = Field(default=False)
+    employee_type: str | None = Field(default=None, regex="^(full_time|part_time|contractor)$")
+    raw_data: Any | None = Field(default=None)
+
+
+class DarwinBoxEmployeeUpdate(SQLModel):
+    email: EmailStr | None = Field(default=None, max_length=255)
+    full_name: str | None = Field(default=None, max_length=255)
+    employee_code: str | None = Field(default=None, max_length=100)
+    designation: str | None = Field(default=None, max_length=255)
+    department: str | None = Field(default=None, max_length=255)
+    location: str | None = Field(default=None, max_length=255)
+    reporting_manager_id: str | None = Field(default=None, max_length=255)
+    reporting_manager_name: str | None = Field(default=None, max_length=255)
+    date_of_joining: str | None = Field(default=None)
+    employment_status: str | None = Field(default=None, regex="^(active|inactive|terminated)$")
+    phone_number: str | None = Field(default=None, max_length=50)
+    grade: str | None = Field(default=None, max_length=50)
+    business_unit: str | None = Field(default=None, max_length=255)
+    cost_center: str | None = Field(default=None, max_length=255)
+    is_manager: bool | None = Field(default=None)
+    employee_type: str | None = Field(default=None, regex="^(full_time|part_time|contractor)$")
+    raw_data: Any | None = Field(default=None)
+
+
+# Employee to GitHub Mapping Models
+class EmployeeGitHubMappingBase(SQLModel):
+    github_username: str = Field(max_length=255, index=True)  # GitHub username
+    github_id: int | None = Field(default=None, index=True)  # GitHub numeric ID
+    mapping_verified: bool = Field(default=False)  # Whether the mapping has been verified
+    verification_method: str | None = Field(default=None, max_length=100)  # How it was verified
+    verification_notes: str | None = Field(default=None, max_length=500)  # Additional notes
+
+
+# Database model
+class EmployeeGitHubMapping(EmployeeGitHubMappingBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # DarwinBox employee relationship
+    darwinbox_employee_id: uuid.UUID = Field(
+        foreign_key="darwinboxemployee.id", 
+        nullable=False, 
+        ondelete="CASCADE",
+        unique=True
+    )
+    darwinbox_employee: DarwinBoxEmployee | None = Relationship(back_populates="github_mapping")
+    
+    # Who created this mapping
+    mapped_by_id: uuid.UUID = Field(
+        foreign_key="user.id", 
+        nullable=False, 
+        ondelete="CASCADE"
+    )
+    mapped_by: User | None = Relationship(
+        sa_relationship_kwargs={"foreign_keys": "[EmployeeGitHubMapping.mapped_by_id]"}
+    )
+
+
+# Public model for API responses
+class EmployeeGitHubMappingPublic(EmployeeGitHubMappingBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    verified_at: str | None
+    darwinbox_employee_id: uuid.UUID
+    github_user_id: uuid.UUID
+    mapped_by_id: uuid.UUID
+    darwinbox_employee_name: str = Field(max_length=255)
+    github_username: str = Field(max_length=255)
+    mapped_by_name: str = Field(max_length=255)
+
+
+class EmployeeGitHubMappingsPublic(SQLModel):
+    data: list[EmployeeGitHubMappingPublic]
+    count: int
+
+
+# Request models
+class EmployeeGitHubMappingCreate(SQLModel):
+    darwinbox_employee_id: uuid.UUID
+    github_user_id: uuid.UUID
+    mapping_method: str = Field(regex="^(manual|auto_email|auto_name|admin_assigned)$")
+    mapping_confidence: int | None = Field(default=None, ge=1, le=100)
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class EmployeeGitHubMappingUpdate(SQLModel):
+    mapping_status: str | None = Field(default=None, regex="^(active|pending|inactive)$")
+    mapping_confidence: int | None = Field(default=None, ge=1, le=100)
+    notes: str | None = Field(default=None, max_length=1000)
+    verified_at: str | None = Field(default=None)
+
+
+# Team Structure Models
+class TeamStructureBase(SQLModel):
+    team_name: str = Field(max_length=255, index=True)
+    team_code: str | None = Field(default=None, max_length=100)
+    department: str = Field(max_length=255, index=True)
+    division: str | None = Field(default=None, max_length=255)
+    team_size: int = Field(default=0, ge=0)
+    team_type: str = Field(default="functional", max_length=50)  # functional, project, cross_functional
+    is_active: bool = Field(default=True)
+    parent_team_id: uuid.UUID | None = Field(default=None)  # For hierarchical teams
+
+
+# Database model
+class TeamStructure(TeamStructureBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Manager relationship (DarwinBox employee)
+    manager_id: uuid.UUID | None = Field(
+        foreign_key="darwinboxemployee.id", 
+        nullable=True, 
+        ondelete="SET NULL"
+    )
+    manager: DarwinBoxEmployee | None = Relationship(
+        back_populates="managed_teams",
+        sa_relationship_kwargs={"foreign_keys": "[TeamStructure.manager_id]"}
+    )
+    
+    # Created by relationship
+    created_by_id: uuid.UUID = Field(
+        foreign_key="user.id", 
+        nullable=False, 
+        ondelete="CASCADE"
+    )
+    created_by: User | None = Relationship()
+    
+    # Team metadata
+    team_metadata: Any | None = Field(default=None, sa_column=Column(JSON))  # Additional team info
+
+
+# Public model for API responses
+class TeamStructurePublic(TeamStructureBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    manager_name: str | None = Field(default=None, max_length=255)
+    created_by_name: str = Field(max_length=255)
+
+
+class TeamStructuresPublic(SQLModel):
+    data: list[TeamStructurePublic]
+    count: int
+
+
+# Request models
+class TeamStructureCreate(SQLModel):
+    team_name: str = Field(min_length=1, max_length=255)
+    team_code: str | None = Field(default=None, max_length=100)
+    department: str = Field(min_length=1, max_length=255)
+    division: str | None = Field(default=None, max_length=255)
+    team_type: str = Field(default="functional", regex="^(functional|project|cross_functional)$")
+    manager_id: uuid.UUID | None = Field(default=None)
+    parent_team_id: uuid.UUID | None = Field(default=None)
+    team_metadata: Any | None = Field(default=None)
+
+
+class TeamStructureUpdate(SQLModel):
+    team_name: str | None = Field(default=None, max_length=255)
+    team_code: str | None = Field(default=None, max_length=100)
+    department: str | None = Field(default=None, max_length=255)
+    division: str | None = Field(default=None, max_length=255)
+    team_size: int | None = Field(default=None, ge=0)
+    team_type: str | None = Field(default=None, regex="^(functional|project|cross_functional)$")
+    is_active: bool | None = Field(default=None)
+    manager_id: uuid.UUID | None = Field(default=None)
+    parent_team_id: uuid.UUID | None = Field(default=None)
+    team_metadata: Any | None = Field(default=None)
+
+
+# DarwinBox Sync Status Model
+class DarwinBoxSyncStatus(SQLModel):
+    sync_type: str  # employees, teams, full
+    status: str  # running, completed, failed
+    started_at: str
+    completed_at: str | None
+    total_records: int
+    processed_records: int
+    failed_records: int
+    error_message: str | None
+    sync_metadata: dict[str, Any]
+
+
+# Response models for DarwinBox APIs
+class DarwinBoxEmployeeAnalytics(SQLModel):
+    total_employees: int
+    active_employees: int
+    departments: dict[str, int]
+    locations: dict[str, int]
+    employment_types: dict[str, int]
+    github_mapping_stats: dict[str, int]
+    team_distribution: dict[str, int]
+
+
+class EmployeeGitHubMappingAnalytics(SQLModel):
+    total_mappings: int
+    mapping_methods: dict[str, int]
+    mapping_confidence_distribution: dict[str, int]
+    unmapped_employees: int
+    pending_verifications: int
+    mapping_coverage_percentage: float
+
+
+class TeamHierarchyResponse(SQLModel):
+    team: TeamStructurePublic
+    parent_team: TeamStructurePublic | None
+    sub_teams: list[TeamStructurePublic]
+    team_members: list[DarwinBoxEmployeePublic]
+    total_members: int
+
+
+# DarwinBox Sync Request/Response Models
+class DarwinBoxSyncRequest(SQLModel):
+    sync_type: str = Field(regex="^(employees|teams|mappings|full)$")  # Type of sync to perform
+    force_update: bool = Field(default=False)  # Force update even if recently synced
+    department_filter: str | None = Field(default=None, max_length=255)  # Optional department filter
+    location_filter: str | None = Field(default=None, max_length=255)  # Optional location filter
+    include_inactive: bool = Field(default=False)  # Include inactive employees/teams
+    batch_size: int = Field(default=100, ge=10, le=1000)  # Number of records to process per batch
+    dry_run: bool = Field(default=False)  # Preview changes without committing
+    metadata: dict[str, Any] | None = Field(default=None)  # Additional sync parameters
+
+
+class DarwinBoxSyncResponse(SQLModel):
+    sync_id: str = Field(max_length=100)  # Unique ID for this sync operation
+    status: str = Field(regex="^(initiated|in_progress|completed|failed|cancelled)$")
+    message: str
+    sync_type: str
+    started_at: str
+    estimated_completion_time: str | None = Field(default=None)
+    total_records_to_process: int | None = Field(default=None)
+    records_processed: int = Field(default=0)
+    records_created: int = Field(default=0)
+    records_updated: int = Field(default=0)
+    records_failed: int = Field(default=0)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    dry_run: bool = Field(default=False)
+    sync_details: dict[str, Any] = Field(default_factory=dict)
+
+
+# Employee Search Parameters Model
+class EmployeeSearchParams(SQLModel):
+    search_query: str | None = Field(default=None, max_length=255)  # Search by name, email, or employee_id
+    department: str | None = Field(default=None, max_length=255)
+    location: str | None = Field(default=None, max_length=255)
+    office_location: str | None = Field(default=None, max_length=255)
+    employment_status: str | None = Field(default=None, regex="^(active|inactive|terminated|all)$")
+    employment_type: str | None = Field(default=None, regex="^(full_time|part_time|contractor|all)$")
+    has_github_mapping: bool | None = Field(default=None)  # Filter by GitHub mapping status
+    manager_employee_id: str | None = Field(default=None, max_length=255)  # Filter by reporting manager
+    grade: str | None = Field(default=None, max_length=50)
+    business_unit: str | None = Field(default=None, max_length=255)
+    date_of_joining_from: str | None = Field(default=None)  # ISO date string
+    date_of_joining_to: str | None = Field(default=None)  # ISO date string
+    sort_by: str = Field(default="full_name", regex="^(full_name|employee_id|date_of_joining|department|updated_at)$")
+    sort_order: str = Field(default="asc", regex="^(asc|desc)$")
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    include_custom_attributes: bool = Field(default=False)  # Include custom attributes in response
+
+
+# Team with Skills Response Model
+class TeamWithSkillsResponse(SQLModel):
+    team: TeamStructurePublic
+    manager: DarwinBoxEmployeePublic | None = Field(default=None)
+    team_members: list[DarwinBoxEmployeePublic] = Field(default_factory=list)
+    total_members: int = Field(default=0)
+    skill_summary: dict[str, Any] = Field(default_factory=dict)  # Aggregated team skills
+    skill_distribution: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)  # Skills by category
+    skill_gaps: list[dict[str, Any]] = Field(default_factory=list)  # Identified skill gaps
+    top_skills: list[dict[str, Any]] = Field(default_factory=list)  # Most common skills in team
+    rare_skills: list[dict[str, Any]] = Field(default_factory=list)  # Unique/rare skills in team
+    skill_coverage: dict[str, float] = Field(default_factory=dict)  # Percentage coverage by skill category
+    recommendations: list[str] = Field(default_factory=list)  # Training/hiring recommendations
+    last_analyzed_at: str | None = Field(default=None)
