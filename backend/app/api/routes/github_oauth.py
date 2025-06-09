@@ -627,8 +627,12 @@ async def save_organization_contributors(
                             )
                         ).first()
                         
+                        # Skip fetching detailed user information during bulk sync
+                        # This will be done in a separate endpoint to avoid timeouts
+                        user_details = {}
+                        
                         if existing_contributor:
-                            # Update existing contributor
+                            # Update existing contributor with enhanced data
                             existing_contributor.login = contributor_data["login"]
                             existing_contributor.avatar_url = contributor_data.get("avatar_url")
                             existing_contributor.html_url = contributor_data["html_url"]
@@ -637,9 +641,14 @@ async def save_organization_contributors(
                             existing_contributor.updated_at = now
                             existing_contributor.last_sync_at = now
                             
+                            # Update with detailed user information
+                            for field, value in user_details.items():
+                                if value is not None:
+                                    setattr(existing_contributor, field, value)
+                            
                             contributor = existing_contributor
                         else:
-                            # Create new contributor
+                            # Create new contributor with enhanced data
                             contributor = GitHubContributor(
                                 github_id=contributor_data["id"],
                                 login=contributor_data["login"],
@@ -651,7 +660,8 @@ async def save_organization_contributors(
                                 updated_at=now,
                                 last_sync_at=now,
                                 organization_id=organization.id,
-                                total_contributions=0
+                                total_contributions=0,
+                                **user_details
                             )
                             session.add(contributor)
                             contributors_saved += 1
@@ -1148,6 +1158,158 @@ async def get_user_organizations(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get user organizations: {str(e)}"
+        )
+
+
+@router.post("/org/{org_name}/contributors/fetch-emails")
+async def fetch_contributor_emails(
+    org_name: str,
+    session: SessionDep,
+    current_user: CurrentUser,
+    limit: int = 100
+) -> Message:
+    """
+    Bulk fetch email addresses for contributors in an organization using GitHub GraphQL API.
+    This is much more efficient than individual REST API calls.
+    """
+    # Verify user has GitHub OAuth connection
+    statement = select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
+    github_oauth = session.exec(statement).first()
+    
+    if not github_oauth or not github_oauth.is_active:
+        raise HTTPException(
+            status_code=401, 
+            detail="GitHub connection required. Please connect your GitHub account first."
+        )
+    
+    try:
+        # Decrypt access token
+        access_token = encryption_service.decrypt(github_oauth.encrypted_access_token)
+        
+        # Get organization
+        org_statement = select(GitHubOrganization).where(GitHubOrganization.name == org_name)
+        organization = session.exec(org_statement).first()
+        
+        if not organization:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Organization '{org_name}' not found. Please sync it first."
+            )
+        
+        # Get contributors without email addresses
+        contributors_without_email = session.exec(
+            select(GitHubContributor)
+            .where(GitHubContributor.organization_id == organization.id)
+            .where(GitHubContributor.email == None)
+            .limit(limit)
+        ).all()
+        
+        if not contributors_without_email:
+            return Message(message="All contributors already have email addresses fetched.")
+        
+        updated_count = 0
+        
+        async with httpx.AsyncClient() as client:
+            # Process contributors in batches of 50 using GraphQL
+            batch_size = 50
+            for i in range(0, len(contributors_without_email), batch_size):
+                batch = contributors_without_email[i:i + batch_size]
+                
+                # Build GraphQL query for batch
+                user_queries = []
+                for idx, contributor in enumerate(batch):
+                    user_queries.append(f'''
+                        user{idx}: user(login: "{contributor.login}") {{
+                            login
+                            email
+                            name
+                            company
+                            bio
+                            location
+                            websiteUrl
+                            isHireable
+                            followers {{ totalCount }}
+                            following {{ totalCount }}
+                            repositories(privacy: PUBLIC) {{ totalCount }}
+                        }}
+                    ''')
+                
+                graphql_query = f'''
+                    query {{
+                        {" ".join(user_queries)}
+                    }}
+                '''
+                
+                try:
+                    # Make GraphQL request
+                    response = await client.post(
+                        "https://api.github.com/graphql",
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json"
+                        },
+                        json={"query": graphql_query},
+                        timeout=30.0
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        if "data" in data:
+                            # Update contributors with fetched data
+                            for idx, contributor in enumerate(batch):
+                                user_key = f"user{idx}"
+                                if user_key in data["data"] and data["data"][user_key]:
+                                    user_data = data["data"][user_key]
+                                    
+                                    # Update contributor with detailed information
+                                    contributor.email = user_data.get("email")
+                                    contributor.name = user_data.get("name")
+                                    contributor.company = user_data.get("company")
+                                    contributor.bio = user_data.get("bio")
+                                    contributor.location = user_data.get("location")
+                                    contributor.blog = user_data.get("websiteUrl")
+                                    contributor.hireable = user_data.get("isHireable")
+                                    
+                                    # Update counts from GraphQL response
+                                    if "followers" in user_data and user_data["followers"]:
+                                        contributor.followers = user_data["followers"]["totalCount"]
+                                    if "following" in user_data and user_data["following"]:
+                                        contributor.following = user_data["following"]["totalCount"]
+                                    if "repositories" in user_data and user_data["repositories"]:
+                                        contributor.public_repos = user_data["repositories"]["totalCount"]
+                                    
+                                    contributor.updated_at = datetime.utcnow().isoformat()
+                                    
+                                    session.add(contributor)
+                                    updated_count += 1
+                                    
+                                    logger.info(f"Updated {contributor.login} with email: {contributor.email}")
+                        
+                        # Commit after each batch
+                        session.commit()
+                        
+                except Exception as e:
+                    logger.warning(f"Error fetching batch of contributors: {e}")
+                    continue
+        
+        # Count total contributors with emails
+        email_count = session.exec(
+            select(func.count()).select_from(GitHubContributor)
+            .where(GitHubContributor.organization_id == organization.id)
+            .where(GitHubContributor.email != None)
+        ).one()
+        
+        return Message(
+            message=f"Updated {updated_count} contributors with email addresses using bulk GraphQL API. "
+                   f"Total contributors with emails: {email_count}"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error fetching contributor emails: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch contributor emails: {str(e)}"
         )
 
 
