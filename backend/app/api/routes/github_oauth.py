@@ -1166,11 +1166,12 @@ async def fetch_contributor_emails(
     org_name: str,
     session: SessionDep,
     current_user: CurrentUser,
-    limit: int = 100
+    limit: int | None = None
 ) -> Message:
     """
     Bulk fetch email addresses for contributors in an organization using GitHub GraphQL API.
     This is much more efficient than individual REST API calls.
+    If no limit is provided, it will fetch emails for ALL contributors without email addresses.
     """
     # Verify user has GitHub OAuth connection
     statement = select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
@@ -1197,15 +1198,20 @@ async def fetch_contributor_emails(
             )
         
         # Get contributors without email addresses
-        contributors_without_email = session.exec(
+        query = (
             select(GitHubContributor)
             .where(GitHubContributor.organization_id == organization.id)
             .where(GitHubContributor.email == None)
-            .limit(limit)
-        ).all()
+        )
+        if limit is not None:
+            query = query.limit(limit)
+        contributors_without_email = session.exec(query).all()
         
         if not contributors_without_email:
             return Message(message="All contributors already have email addresses fetched.")
+        
+        total_to_fetch = len(contributors_without_email)
+        logger.info(f"Starting to fetch emails for {total_to_fetch} contributors in organization '{org_name}'")
         
         updated_count = 0
         
@@ -1289,6 +1295,10 @@ async def fetch_contributor_emails(
                         # Commit after each batch
                         session.commit()
                         
+                        # Log progress
+                        progress = min(i + batch_size, total_to_fetch)
+                        logger.info(f"Progress: {progress}/{total_to_fetch} contributors processed ({updated_count} emails found)")
+                        
                 except Exception as e:
                     logger.warning(f"Error fetching batch of contributors: {e}")
                     continue
@@ -1300,9 +1310,17 @@ async def fetch_contributor_emails(
             .where(GitHubContributor.email != None)
         ).one()
         
+        # Count remaining contributors without emails
+        remaining_without_email = session.exec(
+            select(func.count()).select_from(GitHubContributor)
+            .where(GitHubContributor.organization_id == organization.id)
+            .where(GitHubContributor.email == None)
+        ).one()
+        
         return Message(
             message=f"Updated {updated_count} contributors with email addresses using bulk GraphQL API. "
-                   f"Total contributors with emails: {email_count}"
+                   f"Total contributors with emails: {email_count}. "
+                   f"Remaining without emails: {remaining_without_email}"
         )
         
     except Exception as e:

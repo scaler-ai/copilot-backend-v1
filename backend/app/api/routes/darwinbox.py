@@ -30,6 +30,9 @@ from app.models import (
     User,
     UserSkill,
     ContributorAnalysis,
+    BatchMappingReview,
+    BatchMappingReviewResponse,
+    MappingReviewItem,
 )
 from app.services.darwinbox_service import darwinbox_service
 
@@ -363,6 +366,144 @@ async def auto_map_github_accounts(
             status_code=500,
             detail=f"Failed to auto-map accounts: {str(e)}"
         )
+
+
+@router.post("/enhanced-auto-map")
+async def enhanced_auto_map_employees(
+    session: SessionDep,
+    current_user: CurrentUser,
+    confidence_threshold: float = Query(0.85, ge=0.0, le=1.0, description="Minimum confidence for auto-mapping (0-1)"),
+    limit: int | None = Query(None, description="Maximum number of employees to process")
+) -> Any:
+    """
+    Enhanced auto-mapping with advanced matching algorithms.
+    Uses multiple strategies including fuzzy name matching, email normalization, and confidence scoring.
+    Requires superuser privileges.
+    """
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=403,
+            detail="Only superusers can perform auto-mapping"
+        )
+    
+    try:
+        from app.services.enhanced_mapping_service import enhanced_mapping_service
+        
+        result = await enhanced_mapping_service.enhanced_auto_map(
+            session=session,
+            current_user=current_user,
+            confidence_threshold=confidence_threshold,
+            limit=limit
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in enhanced auto-mapping: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to perform enhanced auto-mapping: {str(e)}"
+        )
+
+
+@router.post("/batch-review-mappings", response_model=BatchMappingReviewResponse)
+def batch_review_mappings(
+    review_data: BatchMappingReview,
+    session: SessionDep,
+    current_user: CurrentUser
+) -> Any:
+    """
+    Batch review and approve/reject multiple mapping suggestions.
+    Allows efficient processing of mapping recommendations from enhanced auto-mapping.
+    """
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=403,
+            detail="Only superusers can review mappings"
+        )
+    
+    approved = 0
+    rejected = 0
+    skipped = 0
+    errors = []
+    
+    for mapping_item in review_data.mappings:
+        try:
+            if mapping_item.action == "skip":
+                skipped += 1
+                continue
+            
+            # Get employee
+            employee = session.get(DarwinBoxEmployee, mapping_item.darwinbox_employee_id)
+            if not employee:
+                errors.append({
+                    "employee_id": str(mapping_item.darwinbox_employee_id),
+                    "error": "Employee not found"
+                })
+                continue
+            
+            if mapping_item.action == "approve":
+                # Check if mapping already exists
+                existing = session.exec(
+                    select(EmployeeGitHubMapping)
+                    .where(EmployeeGitHubMapping.darwinbox_employee_id == employee.id)
+                ).first()
+                
+                if existing:
+                    errors.append({
+                        "employee_id": str(mapping_item.darwinbox_employee_id),
+                        "error": "Mapping already exists"
+                    })
+                    continue
+                
+                # Get GitHub contributor
+                contributor = session.exec(
+                    select(GitHubContributor)
+                    .where(GitHubContributor.login == mapping_item.github_username)
+                ).first()
+                
+                if not contributor:
+                    errors.append({
+                        "employee_id": str(mapping_item.darwinbox_employee_id),
+                        "error": f"GitHub user {mapping_item.github_username} not found"
+                    })
+                    continue
+                
+                # Create mapping
+                new_mapping = EmployeeGitHubMapping(
+                    darwinbox_employee_id=employee.id,
+                    github_username=contributor.login,
+                    github_id=contributor.github_id,
+                    mapping_verified=review_data.auto_verify,
+                    verification_method="manual_review",
+                    verification_notes=mapping_item.notes or "Approved via batch review",
+                    created_at=datetime.utcnow().isoformat(),
+                    updated_at=datetime.utcnow().isoformat(),
+                    mapped_by_id=current_user.id
+                )
+                session.add(new_mapping)
+                approved += 1
+                
+            elif mapping_item.action == "reject":
+                # Optionally store rejection reason for future reference
+                # For now, just count it
+                rejected += 1
+                
+        except Exception as e:
+            errors.append({
+                "employee_id": str(mapping_item.darwinbox_employee_id),
+                "error": str(e)
+            })
+    
+    session.commit()
+    
+    return BatchMappingReviewResponse(
+        total_reviewed=len(review_data.mappings),
+        approved=approved,
+        rejected=rejected,
+        skipped=skipped,
+        errors=errors
+    )
 
 
 @router.get("/my-team")

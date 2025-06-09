@@ -1347,3 +1347,27 @@ class TeamWithSkillsResponse(SQLModel):
     skill_coverage: dict[str, float] = Field(default_factory=dict)  # Percentage coverage by skill category
     recommendations: list[str] = Field(default_factory=list)  # Training/hiring recommendations
     last_analyzed_at: str | None = Field(default=None)
+
+
+# Batch Mapping Review Models
+class MappingReviewItem(SQLModel):
+    """Single mapping to review/approve"""
+    darwinbox_employee_id: uuid.UUID
+    github_username: str
+    action: str = Field(regex="^(approve|reject|skip)$")
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class BatchMappingReview(SQLModel):
+    """Batch review of multiple mapping suggestions"""
+    mappings: list[MappingReviewItem]
+    auto_verify: bool = Field(default=True, description="Automatically mark approved mappings as verified")
+
+
+class BatchMappingReviewResponse(SQLModel):
+    """Response from batch mapping review"""
+    total_reviewed: int
+    approved: int
+    rejected: int
+    skipped: int
+    errors: list[dict[str, str]] = Field(default_factory=list)
