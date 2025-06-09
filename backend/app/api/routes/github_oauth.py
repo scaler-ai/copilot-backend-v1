@@ -376,7 +376,8 @@ async def get_organization_contributors(
     session: SessionDep,
     current_user: CurrentUser,
     per_page: int = 30,
-    page: int = 1
+    page: int = 1,
+    members_only: bool = True
 ) -> Any:
     """
     Get organization contributors from database.
@@ -408,16 +409,26 @@ async def get_organization_contributors(
             detail=f"Organization '{org_name}' not found in database. Please sync it first using POST /org/{org_name}/contributors/save"
         )
     
+    # Build base query
+    base_query = select(GitHubContributor).where(
+        GitHubContributor.organization_id == organization.id
+    )
+    
+    # Apply membership filter if requested
+    if members_only:
+        base_query = base_query.where(GitHubContributor.is_organization_member == True)
+    
     # Get total count of contributors
     count_statement = select(func.count()).select_from(GitHubContributor).where(
         GitHubContributor.organization_id == organization.id
     )
+    if members_only:
+        count_statement = count_statement.where(GitHubContributor.is_organization_member == True)
     total_contributors = session.exec(count_statement).one()
     
     # Get paginated contributors with their repository contributions
     contributors_statement = (
-        select(GitHubContributor)
-        .where(GitHubContributor.organization_id == organization.id)
+        base_query
         .order_by(GitHubContributor.total_contributions.desc())
         .offset((page - 1) * per_page)
         .limit(per_page)
@@ -469,6 +480,7 @@ async def get_organization_contributors(
             "html_url": contributor.html_url,
             "type": contributor.type,
             "site_admin": contributor.site_admin,
+            "is_organization_member": contributor.is_organization_member,
             "total_contributions": contributor.total_contributions,
             "last_sync_at": contributor.last_sync_at if contributor.last_sync_at else None,
             "repositories": repositories,
@@ -627,6 +639,18 @@ async def save_organization_contributors(
                             )
                         ).first()
                         
+                        # Check if contributor is an organization member
+                        is_org_member = False
+                        try:
+                            member_check = await client.get(
+                                f"https://api.github.com/orgs/{org_name}/members/{contributor_data['login']}",
+                                headers={"Authorization": f"Bearer {access_token}"}
+                            )
+                            is_org_member = member_check.status_code == 204
+                        except Exception:
+                            # If check fails, assume not a member
+                            is_org_member = False
+                        
                         # Skip fetching detailed user information during bulk sync
                         # This will be done in a separate endpoint to avoid timeouts
                         user_details = {}
@@ -638,6 +662,7 @@ async def save_organization_contributors(
                             existing_contributor.html_url = contributor_data["html_url"]
                             existing_contributor.type = contributor_data.get("type", "User")
                             existing_contributor.site_admin = contributor_data.get("site_admin", False)
+                            existing_contributor.is_organization_member = is_org_member
                             existing_contributor.updated_at = now
                             existing_contributor.last_sync_at = now
                             
@@ -656,6 +681,7 @@ async def save_organization_contributors(
                                 html_url=contributor_data["html_url"],
                                 type=contributor_data.get("type", "User"),
                                 site_admin=contributor_data.get("site_admin", False),
+                                is_organization_member=is_org_member,
                                 created_at=now,
                                 updated_at=now,
                                 last_sync_at=now,
