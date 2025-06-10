@@ -1412,13 +1412,9 @@ class EmployeeGitHubMappingPublic(EmployeeGitHubMappingBase):
     id: uuid.UUID
     created_at: str
     updated_at: str
-    verified_at: str | None
     darwinbox_employee_id: uuid.UUID
-    github_user_id: uuid.UUID
-    mapped_by_id: uuid.UUID
-    darwinbox_employee_name: str = Field(max_length=255)
-    github_username: str = Field(max_length=255)
-    mapped_by_name: str = Field(max_length=255)
+    employee_name: str | None = Field(default=None, max_length=255)
+    employee_email: str | None = Field(default=None, max_length=255)
 
 
 class EmployeeGitHubMappingsPublic(SQLModel):
@@ -1429,17 +1425,16 @@ class EmployeeGitHubMappingsPublic(SQLModel):
 # Request models
 class EmployeeGitHubMappingCreate(SQLModel):
     darwinbox_employee_id: uuid.UUID
-    github_user_id: uuid.UUID
-    mapping_method: str = Field(regex="^(manual|auto_email|auto_name|admin_assigned)$")
-    mapping_confidence: int | None = Field(default=None, ge=1, le=100)
-    notes: str | None = Field(default=None, max_length=1000)
+    github_username: str = Field(min_length=1, max_length=255)
+    verification_method: str = Field(default="manual", max_length=100)
+    verification_notes: str | None = Field(default=None, max_length=500)
 
 
 class EmployeeGitHubMappingUpdate(SQLModel):
-    mapping_status: str | None = Field(default=None, regex="^(active|pending|inactive)$")
-    mapping_confidence: int | None = Field(default=None, ge=1, le=100)
-    notes: str | None = Field(default=None, max_length=1000)
-    verified_at: str | None = Field(default=None)
+    github_username: str | None = Field(default=None, max_length=255)
+    mapping_verified: bool | None = Field(default=None)
+    verification_method: str | None = Field(default=None, max_length=100)
+    verification_notes: str | None = Field(default=None, max_length=500)
 
 
 # Team Structure Models

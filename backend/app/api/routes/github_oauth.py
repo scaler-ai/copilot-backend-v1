@@ -876,7 +876,10 @@ async def analyze_contributor_skills(
         
         # If analysis exists and is recent (less than 7 days), return it
         if existing_analysis:
-            generated_date = datetime.fromisoformat(existing_analysis.generated_at)
+            try:
+                generated_date = datetime.fromisoformat(existing_analysis.generated_at.replace('Z', '+00:00') if existing_analysis.generated_at.endswith('Z') else existing_analysis.generated_at)
+            except ValueError:
+                generated_date = datetime.utcnow() - timedelta(days=8)  # Force regeneration
             if datetime.utcnow() - generated_date < timedelta(days=7):
                 # Parse skill inferences
                 skill_inferences = []

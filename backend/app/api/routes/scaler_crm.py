@@ -8,6 +8,7 @@ This module provides API endpoints for:
 - Conversation transcript analysis and feedback
 """
 
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
@@ -34,12 +35,15 @@ from app.models import (
     ConversationFeedbackPublic,
     SalesPerformanceAnalysis,
     SalesPerformanceAnalysisPublic,
+    SalesSkillRating,
+    SalesSkillRatingPublic,
     SalesPerformanceResponse,
     ConversationAnalysisResponse,
     TeamPerformanceResponse,
 )
 from app.services.scaler_crm_service import scaler_crm_service
 from app.services.sales_analysis_service import sales_analysis_service
+from app.core.db import engine
 
 router = APIRouter()
 
@@ -194,14 +198,27 @@ async def sync_crm_data(
             "last_sync": crm_auth.last_sync_at
         }
     
+    # Update sync status to syncing
+    crm_auth.sync_status = "syncing"
+    session.add(crm_auth)
+    session.commit()
+    
+    # Create a background task wrapper that creates its own session
+    async def sync_with_new_session():
+        from sqlmodel import Session as NewSession
+        with NewSession(engine) as new_session:
+            # Re-fetch the CRM auth in the new session
+            fresh_crm_auth = new_session.get(ScalerCRMAuth, crm_auth.id)
+            if fresh_crm_auth:
+                await scaler_crm_service.sync_user_data(
+                    new_session,
+                    current_user,
+                    fresh_crm_auth,
+                    months_to_sync
+                )
+    
     # Start sync in background
-    background_tasks.add_task(
-        scaler_crm_service.sync_user_data,
-        session,
-        current_user,
-        crm_auth,
-        months_to_sync
-    )
+    background_tasks.add_task(sync_with_new_session)
     
     return {
         "status": "started",
@@ -484,7 +501,7 @@ async def analyze_sales_performance(
         select(func.count(ScalerActivity.id)).where(ScalerActivity.crm_auth_id == crm_auth.id)
     ).first()
     
-    if activity_count < 10:
+    if not activity_count or activity_count < 10:
         raise HTTPException(
             status_code=400,
             detail="Not enough activity data for analysis. Please sync more data."
@@ -492,8 +509,24 @@ async def analyze_sales_performance(
     
     # Perform analysis
     try:
+        # Get activities for enhanced analysis
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=period_months * 30)
+        
+        activities = session.exec(
+            select(ScalerActivity).where(
+                ScalerActivity.crm_auth_id == crm_auth.id,
+                ScalerActivity.activity_date >= start_date.isoformat(),
+                ScalerActivity.activity_date <= end_date.isoformat()
+            )
+        ).all()
+        
+        # Get enhanced activity analysis
+        activity_summary = sales_analysis_service._prepare_activity_summary(activities)
+        
+        # Perform performance analysis
         analysis = await sales_analysis_service.analyze_sales_performance(
-            session, crm_auth, period_months
+            session, current_user, crm_auth, period_months
         )
         
         # Get recent conversations
@@ -505,7 +538,6 @@ async def analyze_sales_performance(
         ).all()
         
         # Calculate activity trends
-        end_date = datetime.utcnow()
         activity_trends = {}
         for i in range(period_months):
             month_start = end_date - timedelta(days=(i+1)*30)
@@ -528,8 +560,95 @@ async def analyze_sales_performance(
             if rating.inferred_level < 3:
                 learning_recs.append(f"Focus on improving {rating.skill_name}: {rating.improvement_suggestions}")
         
+        # Create enhanced performance data by combining database analysis with activity insights
+        performance_dict = analysis.model_dump()
+        
+        # Add enhanced fields from activity analysis
+        performance_dict.update({
+            "behavioral_insights": activity_summary.get("behavioral_insights", []),
+            "follow_up_analysis": activity_summary.get("follow_up_analysis", {}),
+            "timing_patterns": activity_summary.get("timing_patterns", {}),
+            "common_sequences": activity_summary.get("common_sequences", {}),
+        })
+        
+        # Parse the LLM analysis from the performance summary to add more enhanced fields
+        try:
+            # The strengths_identified and improvement_areas are JSON fields
+            if hasattr(analysis.strengths_identified, '__iter__') and not isinstance(analysis.strengths_identified, str):
+                performance_dict["behavioral_strengths"] = list(analysis.strengths_identified)
+                performance_dict["success_patterns"] = list(analysis.strengths_identified)  # For backwards compatibility
+            else:
+                performance_dict["behavioral_strengths"] = []
+                performance_dict["success_patterns"] = []
+                
+            if hasattr(analysis.improvement_areas, '__iter__') and not isinstance(analysis.improvement_areas, str):
+                # Convert simple list to detailed opportunities format for backwards compatibility
+                improvement_opportunities = []
+                for area in analysis.improvement_areas:
+                    if isinstance(area, dict):
+                        improvement_opportunities.append(area)
+                    else:
+                        improvement_opportunities.append({
+                            "area": str(area),
+                            "current_behavior": "Current approach needs improvement",
+                            "recommended_action": f"Focus on developing {area}",
+                            "expected_impact": "Improved sales effectiveness",
+                            "implementation_tip": "Start with small, consistent changes"
+                        })
+                performance_dict["improvement_opportunities"] = improvement_opportunities
+            else:
+                performance_dict["improvement_opportunities"] = []
+                
+            # Add additional enhanced fields for the UI
+            performance_dict.update({
+                "time_management_insights": [
+                    "Based on your activity patterns and response times",
+                    f"Average response time: {analysis.average_response_time_hours or 'N/A'} hours"
+                ] if analysis.average_response_time_hours else [],
+                "next_30_days_action_plan": [
+                    {
+                        "week": 1,
+                        "focus_area": "Activity Optimization",
+                        "specific_actions": ["Increase daily outreach", "Follow up more consistently"],
+                        "success_metrics": "20% increase in activities per week"
+                    },
+                    {
+                        "week": 2,
+                        "focus_area": "Response Time Improvement", 
+                        "specific_actions": ["Set reminders for follow-ups", "Check CRM twice daily"],
+                        "success_metrics": "Reduce average response time by 25%"
+                    },
+                    {
+                        "week": 3,
+                        "focus_area": "Conversion Rate Focus",
+                        "specific_actions": ["Analyze successful deals", "Improve discovery calls"],
+                        "success_metrics": "Improve conversion rate by 5%"
+                    },
+                    {
+                        "week": 4,
+                        "focus_area": "Process Refinement",
+                        "specific_actions": ["Document best practices", "Review and adjust approach"],
+                        "success_metrics": "Maintain consistent improvement trends"
+                    }
+                ],
+                "performance_rating": {
+                    "overall_score": min(10, max(1, int((analysis.conversion_rate / 10) + 5))),
+                    "explanation": f"Based on {analysis.conversion_rate}% conversion rate and {analysis.total_activities} activities",
+                    "potential_ceiling": "8-9"
+                }
+            })
+                
+        except Exception as e:
+            logging.warning(f"Error parsing LLM analysis fields: {e}")
+            performance_dict["behavioral_strengths"] = []
+            performance_dict["improvement_opportunities"] = []
+            performance_dict["success_patterns"] = []
+            performance_dict["time_management_insights"] = []
+            performance_dict["next_30_days_action_plan"] = []
+            performance_dict["performance_rating"] = {"overall_score": 5, "explanation": "Basic analysis", "potential_ceiling": "7"}
+        
         return SalesPerformanceResponse(
-            current_performance=SalesPerformanceAnalysisPublic.model_validate(analysis),
+            current_performance=performance_dict,
             skill_ratings=[SalesSkillRatingPublic.model_validate(r) for r in analysis.skill_ratings],
             recent_conversations=[ScalerConversationPublic.model_validate(c) for c in recent_conversations],
             activity_trends=activity_trends,
@@ -619,29 +738,33 @@ async def analyze_conversation(
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
-@router.get("/team-performance", response_model=TeamPerformanceResponse)
+@router.get("/team-performance")
 async def get_team_performance(
     *,
     session: SessionDep,
     current_user: CurrentUser,
     team_id: Optional[str] = None,
+    period_months: int = Query(default=3, ge=1, le=12),
 ) -> Any:
     """
-    Get team performance metrics (for managers).
-    This is a placeholder for future team analytics features.
+    Get team performance metrics for managers.
+    This analyzes the sales performance of all team members.
     """
-    # For now, return mock data structure
-    # In a real implementation, this would aggregate data across team members
-    return TeamPerformanceResponse(
-        team_members=[],
-        aggregate_metrics={
-            "total_leads": 0,
-            "total_activities": 0,
-            "average_conversion_rate": 0,
-            "team_size": 0
-        },
-        top_performers=[],
-        team_strengths=["Team performance analysis coming soon"],
-        team_improvement_areas=["Connect team members to analyze performance"],
-        collaboration_score=0.0
-    )
+    try:
+        # Get team performance data
+        team_data = await sales_analysis_service.analyze_team_performance(
+            session=session,
+            current_user=current_user,
+            period_months=period_months
+        )
+        
+        return team_data
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logging.error(f"Error getting team performance: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get team performance: {str(e)}"
+        )

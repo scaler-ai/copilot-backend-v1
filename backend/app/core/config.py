@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     DARWINBOX_BASIC_AUTH: str | None = None
     DARWINBOX_USERNAME: str | None = None
     DARWINBOX_PASSWORD: str | None = None
+    
+    # Scaler CRM Configuration
+    SCALER_CRM_API_URL: str = "https://sales.crm.scaler.com"
+    SCALER_CRM_MOCK_MODE: bool = False  # Use real APIs
 
     def _check_default_secret(self, var_name: str, value: str | None) -> None:
         if value == "changethis":
