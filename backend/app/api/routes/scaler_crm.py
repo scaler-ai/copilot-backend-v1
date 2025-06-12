@@ -21,6 +21,8 @@ from app.api.deps import (
 from app.core.encryption import encryption_service
 from app.models import (
     Message,
+    User,
+    DarwinBoxEmployee,
     ScalerCRMAuth,
     ScalerCRMAuthConnect,
     ScalerCRMAuthPublic,
@@ -780,8 +782,6 @@ async def get_manager_info(
     Get manager information and team members.
     Returns whether the user is a manager and their team members if applicable.
     """
-    from app.models import DarwinBoxEmployee
-    
     # Get current user's employee record
     employee = session.exec(
         select(DarwinBoxEmployee).where(DarwinBoxEmployee.email == current_user.email)
@@ -865,8 +865,6 @@ async def sync_team_member_data(
     Sync a team member's CRM data using the manager's authentication.
     Only available for managers to sync their team members' data.
     """
-    from app.models import DarwinBoxEmployee, User
-    
     # Verify current user is a manager
     manager_employee = session.exec(
         select(DarwinBoxEmployee).where(DarwinBoxEmployee.email == current_user.email)
