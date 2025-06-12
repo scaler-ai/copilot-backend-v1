@@ -953,14 +953,19 @@ async def sync_team_member_data(
     session.add(member_crm_auth)
     session.commit()
     
+    # Store IDs before creating the background task to avoid detached instance errors
+    member_crm_auth_id = member_crm_auth.id
+    manager_crm_auth_id = manager_crm_auth.id
+    member_user_id = member_user.id
+    
     # Create background task to sync member's data
     async def sync_member_with_manager_auth():
         from sqlmodel import Session as NewSession
         with NewSession(engine) as new_session:
-            # Re-fetch records in new session
-            fresh_member_crm = new_session.get(ScalerCRMAuth, member_crm_auth.id)
-            fresh_manager_crm = new_session.get(ScalerCRMAuth, manager_crm_auth.id)
-            fresh_member_user = new_session.get(User, member_user.id)
+            # Re-fetch records in new session using stored IDs
+            fresh_member_crm = new_session.get(ScalerCRMAuth, member_crm_auth_id)
+            fresh_manager_crm = new_session.get(ScalerCRMAuth, manager_crm_auth_id)
+            fresh_member_user = new_session.get(User, member_user_id)
             
             if fresh_member_crm and fresh_manager_crm and fresh_member_user:
                 # Use custom sync method that filters by team member's name/email
