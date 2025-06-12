@@ -25,6 +25,12 @@ try:
     HAS_DARWINBOX = True
 except ImportError:
     HAS_DARWINBOX = False
+
+try:
+    from app.api.routes import scaler_crm
+    HAS_SCALER_CRM = True
+except ImportError:
+    HAS_SCALER_CRM = False
 from app.core.config import settings
 
 api_router = APIRouter()
@@ -44,6 +50,8 @@ if HAS_ADMIN_SKILL_CONFIG:
     api_router.include_router(admin_skill_config.router, prefix="/admin", tags=["admin"])
 if HAS_DARWINBOX:
     api_router.include_router(darwinbox.router, prefix="/darwinbox", tags=["darwinbox"])
+if HAS_SCALER_CRM:
+    api_router.include_router(scaler_crm.router, prefix="/scaler-crm", tags=["scaler-crm"])
 
 
 if settings.ENVIRONMENT == "local":

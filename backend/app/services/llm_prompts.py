@@ -281,3 +281,67 @@ Generate your response now:"""
             "generic_help": "I can help you interact with your connected MCP servers. I can access CRM data, search for leads, and perform various operations. What would you like to do?",
             "be_more_specific": "I can help you with CRM operations. Please be more specific about what you'd like to do (e.g., 'show me recent leads', 'search for leads with gmail')."
         }
+
+
+# Sales Analysis Prompts
+SALES_SKILL_ANALYSIS_PROMPT = """
+Analyze the following sales activity data and infer skills:
+
+Activities Summary:
+- Total calls: {total_calls}
+- Email interactions: {email_count}  
+- Average response time: {avg_response_time}
+- Lead engagement score: {engagement_score}
+- Conversion rate: {conversion_rate}
+
+Recent interactions:
+{recent_activities}
+
+Based on this data, assess the sales representative's skills in:
+1. Communication effectiveness
+2. Relationship building
+3. Closing ability
+4. Time management
+5. Product knowledge
+
+Provide a confidence score (1-5) for each skill.
+"""
+
+CONVERSATION_ANALYSIS_PROMPT = """
+Analyze this sales conversation transcript and provide constructive feedback:
+
+Transcript: {transcript_text}
+Customer Profile: {customer_info}
+Conversation Outcome: {outcome}
+
+Please analyze:
+1. What the sales rep did well (with specific examples)
+2. Areas for improvement (with specific moments)
+3. Missed opportunities (what could have been said/done)
+4. Recommended techniques for similar situations
+5. Specific phrases or approaches to try next time
+
+Format the feedback to be:
+- Specific and actionable
+- Encouraging and constructive
+- Based on actual conversation moments
+- Focused on skill development
+"""
+
+SALES_FEEDBACK_GENERATION_PROMPT = """
+Generate constructive feedback for a sales representative based on their performance:
+
+Performance Metrics:
+{performance_metrics}
+
+Skill Assessment:
+{skill_assessment}
+
+Generate:
+1. 3-5 key strengths with specific examples
+2. 3-5 improvement areas with actionable suggestions
+3. Personalized learning recommendations
+4. Next steps for skill development
+
+Keep feedback positive, specific, and actionable.
+"""

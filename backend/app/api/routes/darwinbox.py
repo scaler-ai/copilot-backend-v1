@@ -506,6 +506,65 @@ def batch_review_mappings(
     )
 
 
+@router.get("/me")
+def get_current_employee_info(
+    session: SessionDep,
+    current_user: CurrentUser
+) -> Any:
+    """
+    Get the current user's DarwinBox employee information.
+    """
+    # Find if current user is mapped to a DarwinBox employee
+    darwinbox_employee = None
+    
+    # First check if user has GitHub OAuth
+    github_oauth = session.exec(
+        select(GitHubOAuth).where(GitHubOAuth.owner_id == current_user.id)
+    ).first()
+    
+    if github_oauth:
+        # Check if there's a mapping via GitHub username
+        mapping = session.exec(
+            select(EmployeeGitHubMapping).where(
+                EmployeeGitHubMapping.github_username == github_oauth.github_username
+            )
+        ).first()
+        
+        if mapping:
+            darwinbox_employee = mapping.darwinbox_employee
+    
+    # If not found via GitHub, check by email
+    if not darwinbox_employee:
+        darwinbox_employee = session.exec(
+            select(DarwinBoxEmployee).where(
+                DarwinBoxEmployee.email == current_user.email
+            )
+        ).first()
+    
+    if not darwinbox_employee:
+        raise HTTPException(
+            status_code=404,
+            detail="You are not mapped to a DarwinBox employee. Please contact an admin."
+        )
+    
+    # Return employee info in the expected format
+    return {
+        "id": str(darwinbox_employee.id),
+        "darwinbox_id": darwinbox_employee.darwinbox_id,
+        "employee_code": darwinbox_employee.employee_code,
+        "full_name": darwinbox_employee.full_name,
+        "email": darwinbox_employee.email,
+        "designation": darwinbox_employee.designation,
+        "department": darwinbox_employee.department,
+        "location": darwinbox_employee.location,
+        "is_manager": darwinbox_employee.is_manager,
+        "manager_id": darwinbox_employee.reporting_manager_id,
+        "employment_status": darwinbox_employee.employment_status,
+        "date_of_joining": darwinbox_employee.date_of_joining,
+        "has_github_mapping": bool(darwinbox_employee.github_mapping)
+    }
+
+
 @router.get("/my-team")
 def get_my_team(
     session: SessionDep,
@@ -515,6 +574,7 @@ def get_my_team(
     """
     Get the current user's team based on DarwinBox hierarchy.
     User must be mapped to a DarwinBox employee who is a manager.
+    Returns a list of team members with their information.
     """
     # Find if current user is mapped to a DarwinBox employee
     darwinbox_employee = None
@@ -556,11 +616,57 @@ def get_my_team(
         )
     
     try:
-        team_data = darwinbox_service.get_team_hierarchy(
-            session=session,
-            manager_id=darwinbox_employee.darwinbox_id,
-            include_skills=include_skills
-        )
+        # Get direct reports
+        team_members = session.exec(
+            select(DarwinBoxEmployee).where(
+                DarwinBoxEmployee.reporting_manager_id == darwinbox_employee.darwinbox_id,
+                DarwinBoxEmployee.employment_status == "active"
+            ).order_by(DarwinBoxEmployee.full_name)
+        ).all()
+        
+        # Convert to the format expected by frontend
+        team_data = []
+        for member in team_members:
+            member_data = {
+                "id": str(member.id),
+                "darwinbox_id": member.darwinbox_id,
+                "employee_code": member.employee_code,
+                "full_name": member.full_name,
+                "email": member.email,
+                "designation": member.designation,
+                "department": member.department,
+                "location": member.location,
+                "is_manager": member.is_manager,
+                "manager_id": member.reporting_manager_id,
+                "employment_status": member.employment_status,
+                "date_of_joining": member.date_of_joining,
+                "has_github_mapping": bool(member.github_mapping)
+            }
+            
+            # Add skills if requested and available
+            if include_skills and member.github_mapping:
+                # Get skills from user associated with the GitHub mapping
+                github_contributor = session.exec(
+                    select(GitHubContributor).where(
+                        GitHubContributor.login == member.github_mapping.github_username
+                    )
+                ).first()
+                
+                if github_contributor and github_contributor.analysis:
+                    # Get skills from the latest analysis
+                    latest_analysis = github_contributor.analysis[-1] if github_contributor.analysis else None
+                    if latest_analysis:
+                        member_data["skills"] = [
+                            {
+                                "skill_id": skill.skill.sfia_skill_id,
+                                "skill_name": skill.skill.name,
+                                "inferred_level": skill.inferred_level,
+                                "confidence_score": skill.confidence_score
+                            }
+                            for skill in latest_analysis.skills
+                        ]
+            
+            team_data.append(member_data)
         
         return team_data
         

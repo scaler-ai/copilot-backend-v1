@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import EmailStr
 from sqlalchemy import JSON, Column
@@ -51,6 +51,7 @@ class User(UserBase, table=True):
     chat_conversations: list["ChatConversation"] = Relationship(back_populates="owner", cascade_delete=True)
     llm_settings: Optional["LLMSettings"] = Relationship(back_populates="owner", cascade_delete=True, sa_relationship_kwargs={"uselist": False})
     github_oauth: Optional["GitHubOAuth"] = Relationship(back_populates="owner", cascade_delete=True, sa_relationship_kwargs={"uselist": False})
+    scaler_crm_auth: Optional["ScalerCRMAuth"] = Relationship(back_populates="owner", cascade_delete=True, sa_relationship_kwargs={"uselist": False})
     skills: list["UserSkill"] = Relationship(back_populates="owner", cascade_delete=True)
     # discovered_github_organizations: list["GitHubOrganization"] = Relationship(back_populates="discovered_by", cascade_delete=True)
 
@@ -204,8 +205,8 @@ class ChatToolCall(SQLModel):
     server_id: str
     server_name: str
     tool_name: str
-    parameters: dict[str, Any]
-    result: dict[str, Any]
+    parameters: Dict[str, Any]
+    result: Dict[str, Any]
     success: bool
 
 
@@ -667,6 +668,7 @@ class GitHubContributorBase(SQLModel):
     following: int | None = Field(default=None)
     hireable: bool | None = Field(default=None)
     total_contributions: int = Field(default=0)
+    is_organization_member: bool = Field(default=False)
 
 
 class GitHubContributor(GitHubContributorBase, table=True):
@@ -989,6 +991,285 @@ class SkillProgressResponse(SQLModel):
     estimated_timeline: str
 
 
+# Scaler CRM Models
+class ScalerCRMAuthBase(SQLModel):
+    crm_user_email: EmailStr = Field(max_length=255, index=True)
+    crm_user_id: str | None = Field(default=None, max_length=255)  # CRM user ID after successful auth
+    crm_user_name: str | None = Field(default=None, max_length=255)
+    is_active: bool = Field(default=True)
+    last_sync_at: str | None = Field(default=None)
+    sync_status: str = Field(default="pending", max_length=50)  # pending, syncing, completed, failed
+
+
+# Database model
+class ScalerCRMAuth(ScalerCRMAuthBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    encrypted_access_token: str = Field(max_length=1000)  # Encrypted CRM access token
+    encrypted_refresh_token: str | None = Field(default=None, max_length=1000)  # Encrypted refresh token
+    token_expires_at: str | None = Field(default=None)  # When access token expires
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    owner_id: uuid.UUID = Field(foreign_key="user.id", nullable=False, ondelete="CASCADE", unique=True)
+    owner: User | None = Relationship()
+    
+    # Relationships
+    leads: list["ScalerLead"] = Relationship(back_populates="crm_auth", cascade_delete=True)
+    activities: list["ScalerActivity"] = Relationship(back_populates="crm_auth", cascade_delete=True)
+    conversations: list["ScalerConversation"] = Relationship(back_populates="crm_auth", cascade_delete=True)
+    performance_analyses: list["SalesPerformanceAnalysis"] = Relationship(back_populates="crm_auth", cascade_delete=True)
+
+
+# Public model for API responses (excludes tokens)
+class ScalerCRMAuthPublic(ScalerCRMAuthBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    owner_id: uuid.UUID
+
+
+# Request models
+class ScalerCRMAuthConnect(SQLModel):
+    email: EmailStr = Field(max_length=255)
+    password: str = Field(min_length=1, max_length=100)  # Will not be stored
+
+
+class ScalerCRMAuthResponse(SQLModel):
+    success: bool
+    message: str
+    crm_auth: ScalerCRMAuthPublic | None = Field(default=None)
+
+
+# Scaler Lead Models
+class ScalerLeadBase(SQLModel):
+    lead_id: str = Field(max_length=255, index=True)  # CRM lead ID
+    lead_name: str = Field(max_length=255)
+    email: EmailStr | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=50)
+    company: str | None = Field(default=None, max_length=255)
+    designation: str | None = Field(default=None, max_length=255)
+    lead_source: str | None = Field(default=None, max_length=100)
+    lead_status: str = Field(max_length=100)  # new, contacted, qualified, etc.
+    lead_stage: str | None = Field(default=None, max_length=100)  # awareness, consideration, decision
+    lead_score: int | None = Field(default=None, ge=0, le=100)
+    created_date: str | None = Field(default=None)  # From CRM
+    last_activity_date: str | None = Field(default=None)
+    assigned_to: str | None = Field(default=None, max_length=255)  # Sales rep name
+    assigned_to_id: str | None = Field(default=None, max_length=255)  # Sales rep ID in CRM
+
+
+class ScalerLead(ScalerLeadBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    raw_data: Any | None = Field(default=None, sa_column=Column(JSON))  # Complete CRM response
+    
+    # CRM Auth relationship
+    crm_auth_id: uuid.UUID = Field(foreign_key="scalercrmauth.id", nullable=False, ondelete="CASCADE")
+    crm_auth: ScalerCRMAuth | None = Relationship(back_populates="leads")
+    
+    # Lead activities and conversations
+    activities: list["ScalerActivity"] = Relationship(back_populates="lead", cascade_delete=True)
+    conversations: list["ScalerConversation"] = Relationship(back_populates="lead", cascade_delete=True)
+
+
+class ScalerLeadPublic(ScalerLeadBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    activity_count: int = Field(default=0)
+    conversation_count: int = Field(default=0)
+
+
+# Scaler Activity Models
+class ScalerActivityBase(SQLModel):
+    activity_id: str = Field(max_length=255, index=True)  # CRM activity ID
+    activity_type: str = Field(max_length=100)  # call, email, meeting, whatsapp, task
+    activity_subject: str | None = Field(default=None, max_length=500)
+    activity_description: str | None = Field(default=None, max_length=5000)
+    activity_date: str = Field(index=True)  # ISO date string
+    duration_minutes: int | None = Field(default=None, ge=0)
+    outcome: str | None = Field(default=None, max_length=100)  # successful, no_answer, scheduled, etc.
+    next_action: str | None = Field(default=None, max_length=500)
+    sentiment: str | None = Field(default=None, max_length=50)  # positive, neutral, negative
+    engagement_score: int | None = Field(default=None, ge=1, le=10)
+
+
+class ScalerActivity(ScalerActivityBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    raw_data: Any | None = Field(default=None, sa_column=Column(JSON))
+    
+    # Relationships
+    crm_auth_id: uuid.UUID = Field(foreign_key="scalercrmauth.id", nullable=False, ondelete="CASCADE")
+    crm_auth: ScalerCRMAuth | None = Relationship(back_populates="activities")
+    
+    lead_id: uuid.UUID | None = Field(foreign_key="scalerlead.id", nullable=True, ondelete="CASCADE")
+    lead: ScalerLead | None = Relationship(back_populates="activities")
+
+
+class ScalerActivityPublic(ScalerActivityBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    lead_name: str | None = Field(default=None)
+
+
+# Scaler Conversation Models (for transcript analysis)
+class ScalerConversationBase(SQLModel):
+    conversation_id: str = Field(max_length=255, index=True)  # CRM conversation ID
+    conversation_type: str = Field(max_length=50)  # call, chat, email
+    conversation_date: str = Field(index=True)
+    duration_seconds: int | None = Field(default=None, ge=0)
+    transcript_available: bool = Field(default=False)
+    recording_url: str | None = Field(default=None, max_length=500)
+    analysis_status: str = Field(default="pending", max_length=50)  # pending, analyzing, completed, failed
+
+
+class ScalerConversation(ScalerConversationBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    transcript_text: str | None = Field(default=None, max_length=50000)  # Full transcript
+    transcript_summary: str | None = Field(default=None, max_length=2000)  # AI-generated summary
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    analyzed_at: str | None = Field(default=None)
+    raw_data: Any | None = Field(default=None, sa_column=Column(JSON))
+    
+    # Relationships
+    crm_auth_id: uuid.UUID = Field(foreign_key="scalercrmauth.id", nullable=False, ondelete="CASCADE")
+    crm_auth: ScalerCRMAuth | None = Relationship(back_populates="conversations")
+    
+    lead_id: uuid.UUID | None = Field(foreign_key="scalerlead.id", nullable=True, ondelete="CASCADE")
+    lead: ScalerLead | None = Relationship(back_populates="conversations")
+    
+    # Analysis results
+    feedback_items: list["ConversationFeedback"] = Relationship(back_populates="conversation", cascade_delete=True)
+
+
+class ScalerConversationPublic(ScalerConversationBase):
+    id: uuid.UUID
+    created_at: str
+    updated_at: str
+    analyzed_at: str | None
+    has_feedback: bool = Field(default=False)
+    feedback_count: int = Field(default=0)
+
+
+# Conversation Feedback Models
+class ConversationFeedbackBase(SQLModel):
+    feedback_type: str = Field(max_length=100)  # strength, improvement, technique, missed_opportunity
+    feedback_category: str = Field(max_length=100)  # communication, discovery, objection_handling, closing
+    feedback_text: str = Field(max_length=2000)
+    specific_moment: str | None = Field(default=None, max_length=500)  # Timestamp or quote
+    suggested_response: str | None = Field(default=None, max_length=1000)
+    impact_level: str = Field(default="medium", max_length=50)  # high, medium, low
+    confidence_score: int = Field(ge=1, le=100)
+
+
+class ConversationFeedback(ConversationFeedbackBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Conversation relationship
+    conversation_id: uuid.UUID = Field(foreign_key="scalerconversation.id", nullable=False, ondelete="CASCADE")
+    conversation: ScalerConversation | None = Relationship(back_populates="feedback_items")
+
+
+class ConversationFeedbackPublic(ConversationFeedbackBase):
+    id: uuid.UUID
+    created_at: str
+
+
+# Sales Performance Analysis Models
+class SalesPerformanceAnalysisBase(SQLModel):
+    analysis_period_start: str = Field(index=True)  # ISO date
+    analysis_period_end: str = Field(index=True)  # ISO date
+    total_leads: int = Field(default=0)
+    total_activities: int = Field(default=0)
+    total_conversations: int = Field(default=0)
+    conversion_rate: float = Field(default=0.0, ge=0.0, le=100.0)
+    average_response_time_hours: float | None = Field(default=None, ge=0.0)
+    average_deal_size: float | None = Field(default=None, ge=0.0)
+    activity_breakdown: Any = Field(sa_column=Column(JSON))  # {call: 20, email: 30, etc}
+    lead_stage_distribution: Any = Field(sa_column=Column(JSON))  # {new: 10, contacted: 20, etc}
+    performance_summary: str = Field(max_length=5000)  # LLM-generated summary
+    strengths_identified: Any = Field(sa_column=Column(JSON))  # List of strengths
+    improvement_areas: Any = Field(sa_column=Column(JSON))  # List of improvement areas
+
+
+class SalesPerformanceAnalysis(SalesPerformanceAnalysisBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # CRM Auth relationship
+    crm_auth_id: uuid.UUID = Field(foreign_key="scalercrmauth.id", nullable=False, ondelete="CASCADE")
+    crm_auth: ScalerCRMAuth | None = Relationship(back_populates="performance_analyses")
+    
+    # Skill ratings from this analysis
+    skill_ratings: list["SalesSkillRating"] = Relationship(back_populates="analysis", cascade_delete=True)
+
+
+class SalesPerformanceAnalysisPublic(SalesPerformanceAnalysisBase):
+    id: uuid.UUID
+    generated_at: str
+    updated_at: str
+    skill_ratings_count: int = Field(default=0)
+
+
+# Sales Skill Rating Models
+class SalesSkillRatingBase(SQLModel):
+    skill_id: str = Field(max_length=255, index=True)  # References skills-taxonomy.yaml
+    skill_name: str = Field(max_length=255)
+    skill_category: str = Field(max_length=100)  # communication, relationship, closing, etc.
+    inferred_level: int = Field(ge=1, le=5)  # 1-5 scale for sales skills
+    confidence_score: int = Field(ge=1, le=100)
+    evidence_summary: str = Field(max_length=2000)
+    evidence_count: int = Field(default=0)  # Number of activities/conversations supporting this
+    improvement_suggestions: str | None = Field(default=None, max_length=1000)
+
+
+class SalesSkillRating(SalesSkillRatingBase, table=True):
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Analysis relationship
+    analysis_id: uuid.UUID = Field(foreign_key="salesperformanceanalysis.id", nullable=False, ondelete="CASCADE")
+    analysis: SalesPerformanceAnalysis | None = Relationship(back_populates="skill_ratings")
+
+
+class SalesSkillRatingPublic(SalesSkillRatingBase):
+    id: uuid.UUID
+    generated_at: str
+
+
+# Response models for sales APIs
+class SalesPerformanceResponse(SQLModel):
+    current_performance: SalesPerformanceAnalysisPublic
+    skill_ratings: list[SalesSkillRatingPublic]
+    recent_conversations: list[ScalerConversationPublic]
+    activity_trends: Dict[str, Any]
+    learning_recommendations: list[str]
+
+
+class ConversationAnalysisResponse(SQLModel):
+    conversation: ScalerConversationPublic
+    feedback_items: list[ConversationFeedbackPublic]
+    overall_assessment: str
+    key_moments: list[Dict[str, Any]]
+    skill_demonstrations: list[Dict[str, Any]]
+    next_steps: list[str]
+
+
+class TeamPerformanceResponse(SQLModel):
+    team_members: list[Dict[str, Any]]  # Basic info about team members
+    aggregate_metrics: Dict[str, Any]
+    top_performers: list[Dict[str, Any]]
+    team_strengths: list[str]
+    team_improvement_areas: list[str]
+    collaboration_score: float
+
+
 # DarwinBox Models
 class DarwinBoxEmployeeBase(SQLModel):
     darwinbox_id: str = Field(max_length=255, index=True, unique=True)  # DarwinBox employee ID
@@ -1131,13 +1412,9 @@ class EmployeeGitHubMappingPublic(EmployeeGitHubMappingBase):
     id: uuid.UUID
     created_at: str
     updated_at: str
-    verified_at: str | None
     darwinbox_employee_id: uuid.UUID
-    github_user_id: uuid.UUID
-    mapped_by_id: uuid.UUID
-    darwinbox_employee_name: str = Field(max_length=255)
-    github_username: str = Field(max_length=255)
-    mapped_by_name: str = Field(max_length=255)
+    employee_name: str | None = Field(default=None, max_length=255)
+    employee_email: str | None = Field(default=None, max_length=255)
 
 
 class EmployeeGitHubMappingsPublic(SQLModel):
@@ -1148,17 +1425,16 @@ class EmployeeGitHubMappingsPublic(SQLModel):
 # Request models
 class EmployeeGitHubMappingCreate(SQLModel):
     darwinbox_employee_id: uuid.UUID
-    github_user_id: uuid.UUID
-    mapping_method: str = Field(regex="^(manual|auto_email|auto_name|admin_assigned)$")
-    mapping_confidence: int | None = Field(default=None, ge=1, le=100)
-    notes: str | None = Field(default=None, max_length=1000)
+    github_username: str = Field(min_length=1, max_length=255)
+    verification_method: str = Field(default="manual", max_length=100)
+    verification_notes: str | None = Field(default=None, max_length=500)
 
 
 class EmployeeGitHubMappingUpdate(SQLModel):
-    mapping_status: str | None = Field(default=None, regex="^(active|pending|inactive)$")
-    mapping_confidence: int | None = Field(default=None, ge=1, le=100)
-    notes: str | None = Field(default=None, max_length=1000)
-    verified_at: str | None = Field(default=None)
+    github_username: str | None = Field(default=None, max_length=255)
+    mapping_verified: bool | None = Field(default=None)
+    verification_method: str | None = Field(default=None, max_length=100)
+    verification_notes: str | None = Field(default=None, max_length=500)
 
 
 # Team Structure Models
