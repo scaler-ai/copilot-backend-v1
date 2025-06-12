@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from pydantic import EmailStr
 from sqlalchemy import JSON, Column
@@ -205,8 +205,8 @@ class ChatToolCall(SQLModel):
     server_id: str
     server_name: str
     tool_name: str
-    parameters: dict[str, Any]
-    result: dict[str, Any]
+    parameters: Dict[str, Any]
+    result: Dict[str, Any]
     success: bool
 
 
@@ -1248,7 +1248,7 @@ class SalesPerformanceResponse(SQLModel):
     current_performance: SalesPerformanceAnalysisPublic
     skill_ratings: list[SalesSkillRatingPublic]
     recent_conversations: list[ScalerConversationPublic]
-    activity_trends: dict[str, Any]
+    activity_trends: Dict[str, Any]
     learning_recommendations: list[str]
 
 
@@ -1256,15 +1256,15 @@ class ConversationAnalysisResponse(SQLModel):
     conversation: ScalerConversationPublic
     feedback_items: list[ConversationFeedbackPublic]
     overall_assessment: str
-    key_moments: list[dict[str, Any]]
-    skill_demonstrations: list[dict[str, Any]]
+    key_moments: list[Dict[str, Any]]
+    skill_demonstrations: list[Dict[str, Any]]
     next_steps: list[str]
 
 
 class TeamPerformanceResponse(SQLModel):
-    team_members: list[dict[str, Any]]  # Basic info about team members
-    aggregate_metrics: dict[str, Any]
-    top_performers: list[dict[str, Any]]
+    team_members: list[Dict[str, Any]]  # Basic info about team members
+    aggregate_metrics: Dict[str, Any]
+    top_performers: list[Dict[str, Any]]
     team_strengths: list[str]
     team_improvement_areas: list[str]
     collaboration_score: float

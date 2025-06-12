@@ -11,9 +11,9 @@ This service handles all interactions with the Scaler Sales CRM API, including:
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 import httpx
-from sqlmodel import Session, select, func
+from sqlmodel import Session, select
 from app.core.config import settings
 from app.core.encryption import encryption_service
 from app.models import (
@@ -21,10 +21,7 @@ from app.models import (
     ScalerCRMAuth,
     ScalerLead,
     ScalerActivity,
-    ScalerConversation,
-    SalesPerformanceAnalysis,
-    SalesSkillRating,
-    ConversationFeedback
+    ScalerConversation
 )
 
 logger = logging.getLogger(__name__)
@@ -35,7 +32,7 @@ class ScalerCRMService:
     
     def __init__(self):
         self.base_url = settings.SCALER_CRM_API_URL
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = httpx.AsyncClient(timeout=settings.CALL_API_TIMEOUT)
     
     async def authenticate_with_credentials(
         self, 
@@ -114,6 +111,7 @@ class ScalerCRMService:
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json"
         }
+    
     
     async def get_leads(
         self, 
@@ -418,6 +416,91 @@ class ScalerCRMService:
             logger.error(f"Error fetching transcript: {str(e)}")
             return None
     
+    async def get_call_text_analysis(
+        self,
+        access_token: str,
+        lead_uuid: str,
+        recruiter_uuid: Optional[str] = None,
+        page_size: int = 10,
+        page: int = 1
+    ) -> Dict[str, Any]:
+        """
+        Fetch call text analysis (summaries) for a lead using CRM JWT auth.
+        
+        This API provides:
+        - Summary of Call
+        - Pain Points
+        - Steps to Close
+        - Tailored Solutions
+        - Background of the Lead
+        - Active Objection
+        - Objection Reason
+        """
+        try:
+            params = {
+                "lead_uuid": lead_uuid,
+                "page_size": page_size,
+                "page": page
+            }
+            if recruiter_uuid:
+                params["recruiter_uuid"] = recruiter_uuid
+            
+            # Use CRM subdomain with JWT auth
+            api_url = f"{self.base_url}/core/sail_quest/api/v2/call_text_analysis"
+            
+            response = await self.client.get(
+                api_url,
+                headers=self._get_auth_headers(access_token),  # Use CRM JWT auth
+                params=params
+            )
+            response.raise_for_status()
+            
+            return response.json()
+            
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error fetching call text analysis: {str(e)}")
+            return {"error": str(e), "data": None}
+        except Exception as e:
+            logger.error(f"Error fetching call text analysis: {str(e)}")
+            return {"error": str(e), "data": None}
+    
+    async def get_call_numerical_analysis(
+        self,
+        access_token: str,
+        lead_uuid: str,
+        recruiter_uuid: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Fetch call numerical analysis (aggregates) for a lead using CRM JWT auth.
+        
+        This provides numerical metrics and aggregates for calls.
+        """
+        try:
+            params = {"lead_uuid": lead_uuid}
+            if recruiter_uuid:
+                params["recruiter_uuid"] = recruiter_uuid
+            
+            # Use CRM subdomain with JWT auth
+            api_url = f"{self.base_url}/core/sail_quest/api/v2/call_numerical_analysis"
+            
+            response = await self.client.get(
+                api_url,
+                headers=self._get_auth_headers(access_token),  # Use CRM JWT auth
+                params=params
+            )
+            response.raise_for_status()
+            
+            return response.json()
+            
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error fetching call numerical analysis: {str(e)}")
+            return {"error": str(e), "data": None}
+        except Exception as e:
+            logger.error(f"Error fetching call numerical analysis: {str(e)}")
+            return {"error": str(e), "data": None}
+    
+    
+    
     async def sync_user_data(
         self,
         session: Session,
@@ -666,76 +749,138 @@ class ScalerCRMService:
         start_date: datetime,
         end_date: datetime
     ) -> int:
-        """Sync conversations from CRM"""
+        """Sync call conversations using Sail Quest call analysis APIs with CRM JWT auth"""
         conversations_synced = 0
         
-        # Get leads and sync conversations for each (if the API supports it)
+        # Check if call transcript sync is enabled
+        if not settings.ENABLE_CALL_TRANSCRIPT_SYNC:
+            logger.info("Call transcript sync is disabled in configuration")
+            return 0
+        
+        # Get leads and sync conversations for each
         leads = session.exec(
             select(ScalerLead).where(ScalerLead.crm_auth_id == crm_auth.id)
         ).all()
         
-        logger.info(f"Syncing conversations for {len(leads)} leads")
+        logger.info(f"Syncing call conversations for {len(leads)} leads using Sail Quest APIs")
+        
+        # Get the recruiter UUID if available
+        recruiter_uuid = crm_auth.crm_user_id  # Assuming this contains the UUID
         
         for lead in leads:
             try:
-                result = await self.get_conversations(
+                # Fetch call text analysis for this lead
+                text_analysis_result = await self.get_call_text_analysis(
                     access_token,
-                    lead_id=lead.lead_id,
-                    start_date=start_date,
-                    end_date=end_date
+                    lead_uuid=lead.lead_id,
+                    recruiter_uuid=recruiter_uuid,
+                    page_size=50,  # Get more calls per page
+                    page=1
                 )
                 
-                if "error" in result:
-                    logger.error(f"Error syncing conversations for lead {lead.lead_id}: {result['error']}")
+                if "error" in text_analysis_result:
+                    logger.error(f"Error fetching call text analysis for lead {lead.lead_id}: {text_analysis_result['error']}")
                     continue
                 
-                if not result.get("conversations"):
-                    logger.debug(f"No conversations found for lead {lead.lead_id}")
-                    continue
+                # Also fetch numerical analysis for metrics
+                numerical_analysis_result = await self.get_call_numerical_analysis(
+                    access_token,
+                    lead_uuid=lead.lead_id,
+                    recruiter_uuid=recruiter_uuid
+                )
                 
-                for conv_data in result["conversations"]:
-                    # Check if conversation exists
-                    existing_conv = session.exec(
-                        select(ScalerConversation).where(
-                            ScalerConversation.conversation_id == conv_data["id"],
-                            ScalerConversation.crm_auth_id == crm_auth.id
-                        )
-                    ).first()
+                # Process text analysis data (contains call summaries)
+                if text_analysis_result and not text_analysis_result.get("error"):
+                    # The response structure will contain call analysis data
+                    # Adjust based on actual API response format
+                    calls_data = text_analysis_result.get("data", {}).get("calls", [])
+                    if isinstance(text_analysis_result.get("data"), list):
+                        calls_data = text_analysis_result.get("data", [])
                     
-                    if not existing_conv:
-                        # Create new conversation
-                        new_conv = ScalerConversation(
-                            conversation_id=conv_data["id"],
-                            conversation_type=conv_data.get("type", "unknown"),
-                            conversation_date=conv_data.get("date", datetime.utcnow().isoformat()),
-                            duration_seconds=conv_data.get("duration"),
-                            transcript_available=bool(conv_data.get("transcript")),
-                            recording_url=conv_data.get("recording_url"),
-                            transcript_text=conv_data.get("transcript"),
-                            transcript_summary=conv_data.get("summary"),
-                            raw_data=conv_data,
-                            crm_auth_id=crm_auth.id,
-                            lead_id=lead.id
-                        )
-                        session.add(new_conv)
-                        conversations_synced += 1
-                    else:
-                        # Update transcript if newly available
-                        if conv_data.get("transcript") and not existing_conv.transcript_text:
-                            existing_conv.transcript_text = conv_data["transcript"]
-                            existing_conv.transcript_summary = conv_data.get("summary")
-                            existing_conv.transcript_available = True
-                            existing_conv.updated_at = datetime.utcnow().isoformat()
-                            session.add(existing_conv)
+                    logger.info(f"Found {len(calls_data)} call analyses for lead {lead.lead_id}")
+                    
+                    for call_analysis in calls_data:
+                        try:
+                            # Create a unique conversation ID
+                            call_id = call_analysis.get("call_id") or call_analysis.get("id")
+                            conversation_id = f"call_{lead.lead_id}_{call_id}"
+                            
+                            # Check if conversation exists
+                            existing_conv = session.exec(
+                                select(ScalerConversation).where(
+                                    ScalerConversation.conversation_id == conversation_id,
+                                    ScalerConversation.crm_auth_id == crm_auth.id
+                                )
+                            ).first()
+                            
+                            # Parse call date
+                            call_date_str = call_analysis.get("call_date") or call_analysis.get("created_at")
+                            if call_date_str:
+                                try:
+                                    call_date = datetime.fromisoformat(call_date_str.replace('Z', '+00:00'))
+                                except:
+                                    call_date = datetime.utcnow()
+                            else:
+                                call_date = datetime.utcnow()
+                            
+                            if not existing_conv:
+                                # Create new conversation record with Sail Quest data
+                                new_conv = ScalerConversation(
+                                    conversation_id=conversation_id,
+                                    conversation_type="call",
+                                    conversation_date=call_date.isoformat(),
+                                    duration_seconds=call_analysis.get("duration_seconds", 0),
+                                    transcript_available=True,  # Text analysis means transcript exists
+                                    recording_url=call_analysis.get("recording_url"),
+                                    transcript_text=call_analysis.get("transcript"),  # If full transcript provided
+                                    transcript_summary=call_analysis.get("summary_of_call") or call_analysis.get("summary"),
+                                    raw_data={
+                                        "text_analysis": call_analysis,
+                                        "pain_points": call_analysis.get("pain_points"),
+                                        "steps_to_close": call_analysis.get("steps_to_close"),
+                                        "tailored_solutions": call_analysis.get("tailored_solutions"),
+                                        "background_of_lead": call_analysis.get("background_of_the_lead"),
+                                        "active_objection": call_analysis.get("active_objection"),
+                                        "objection_reason": call_analysis.get("objection_reason")
+                                    },
+                                    crm_auth_id=crm_auth.id,
+                                    lead_id=lead.id
+                                )
+                                
+                                session.add(new_conv)
+                                conversations_synced += 1
+                                logger.info(f"Created conversation record for call {conversation_id}")
+                            else:
+                                # Update existing conversation with new analysis data
+                                existing_conv.transcript_summary = call_analysis.get("summary_of_call") or call_analysis.get("summary")
+                                existing_conv.raw_data = {
+                                    "text_analysis": call_analysis,
+                                    "pain_points": call_analysis.get("pain_points"),
+                                    "steps_to_close": call_analysis.get("steps_to_close"),
+                                    "tailored_solutions": call_analysis.get("tailored_solutions"),
+                                    "background_of_lead": call_analysis.get("background_of_the_lead"),
+                                    "active_objection": call_analysis.get("active_objection"),
+                                    "objection_reason": call_analysis.get("objection_reason")
+                                }
+                                existing_conv.updated_at = datetime.utcnow().isoformat()
+                                session.add(existing_conv)
+                                logger.info(f"Updated conversation record for call {conversation_id}")
+                        
+                        except Exception as e:
+                            logger.error(f"Error processing call analysis for lead {lead.lead_id}: {str(e)}")
+                            continue
                 
-                logger.info(f"Synced {len(result['conversations'])} conversations for lead {lead.lead_id}")
+                # Store numerical analysis data if needed
+                if numerical_analysis_result and not numerical_analysis_result.get("error"):
+                    logger.info(f"Fetched numerical analysis for lead {lead.lead_id}")
+                    # Could store aggregate metrics in lead metadata or separate table
                 
             except Exception as e:
                 logger.error(f"Error syncing conversations for lead {lead.lead_id}: {str(e)}")
                 continue
         
         session.commit()
-        logger.info(f"Total conversations synced: {conversations_synced}")
+        logger.info(f"Total call conversations synced: {conversations_synced}")
         return conversations_synced
     
     async def calculate_performance_metrics(
