@@ -961,6 +961,306 @@ class ScalerCRMService:
             logger.error(f"Error calculating metrics: {str(e)}")
             return {}
     
+    async def sync_team_member_data(
+        self,
+        session: Session,
+        member_user: User,
+        member_crm_auth: ScalerCRMAuth,
+        manager_crm_auth: ScalerCRMAuth,
+        member_email: str,
+        months_to_sync: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Sync a team member's CRM data using their manager's auth token.
+        Only syncs data that belongs to the specific team member.
+        """
+        try:
+            # Decrypt manager's access token
+            access_token = encryption_service.decrypt(manager_crm_auth.encrypted_access_token)
+            
+            if not access_token:
+                logger.error("Manager's access token is None or empty after decryption")
+                member_crm_auth.sync_status = "failed"
+                session.add(member_crm_auth)
+                session.commit()
+                return {
+                    "success": False,
+                    "error": "Manager's access token invalid. Manager needs to reconnect to CRM."
+                }
+            
+            # Update sync status
+            member_crm_auth.sync_status = "syncing"
+            member_crm_auth.updated_at = datetime.utcnow().isoformat()
+            session.add(member_crm_auth)
+            session.commit()
+            
+            # Calculate date range
+            end_date = datetime.utcnow()
+            start_date = end_date - timedelta(days=months_to_sync * 30)
+            
+            # Extract member name variations for filtering
+            member_name_parts = member_email.split('@')[0].split('.')
+            member_variations = [
+                member_email.lower(),
+                ' '.join(member_name_parts).lower(),
+                '.'.join(member_name_parts).lower()
+            ]
+            
+            logger.info(f"Starting sync for team member: {member_email}")
+            logger.info(f"Using name variations: {member_variations}")
+            
+            # Sync leads assigned to the team member
+            leads_synced = await self._sync_team_member_leads(
+                session, member_crm_auth, access_token, member_variations
+            )
+            logger.info(f"Leads sync completed: {leads_synced} leads synced")
+            
+            # Sync activities for the member's leads
+            activities_synced = await self._sync_team_member_activities(
+                session, member_crm_auth, access_token, start_date, end_date
+            )
+            logger.info(f"Activities sync completed: {activities_synced} activities synced")
+            
+            # Sync conversations for the member's leads
+            conversations_synced = await self._sync_team_member_conversations(
+                session, member_crm_auth, access_token, start_date, end_date
+            )
+            logger.info(f"Conversations sync completed: {conversations_synced} conversations synced")
+            
+            # Update sync status
+            member_crm_auth.sync_status = "completed"
+            member_crm_auth.last_sync_at = datetime.utcnow().isoformat()
+            session.add(member_crm_auth)
+            session.commit()
+            
+            return {
+                "success": True,
+                "leads_synced": leads_synced,
+                "activities_synced": activities_synced,
+                "conversations_synced": conversations_synced,
+                "sync_date": member_crm_auth.last_sync_at
+            }
+            
+        except Exception as e:
+            logger.error(f"Team member sync failed: {str(e)}")
+            member_crm_auth.sync_status = "failed"
+            session.add(member_crm_auth)
+            session.commit()
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def _sync_team_member_leads(
+        self,
+        session: Session,
+        member_crm_auth: ScalerCRMAuth,
+        access_token: str,
+        member_variations: List[str]
+    ) -> int:
+        """Sync only leads assigned to the specific team member"""
+        leads_synced = 0
+        page = 1
+        
+        while True:
+            result = await self.get_leads(access_token, page=page, per_page=100)
+            if "error" in result or not result.get("leads"):
+                break
+            
+            for lead_data in result["leads"]:
+                # Check if lead is assigned to the team member
+                assigned_to = (lead_data.get("assigned_to_name") or "").lower()
+                owner_email = ""
+                owner_name = ""
+                
+                if "owner" in lead_data and lead_data["owner"]:
+                    owner_email = (lead_data["owner"].get("email") or "").lower()
+                    owner_name = (lead_data["owner"].get("fullName") or "").lower()
+                
+                # Check if this lead belongs to the team member
+                is_member_lead = any(
+                    variation in assigned_to or 
+                    variation in owner_email or 
+                    variation in owner_name
+                    for variation in member_variations
+                )
+                
+                if is_member_lead:
+                    # Process this lead
+                    existing_lead = session.exec(
+                        select(ScalerLead).where(
+                            ScalerLead.lead_id == lead_data["id"],
+                            ScalerLead.crm_auth_id == member_crm_auth.id
+                        )
+                    ).first()
+                    
+                    if existing_lead:
+                        # Update existing lead
+                        existing_lead.lead_name = lead_data.get("name", "")
+                        existing_lead.email = lead_data.get("email")
+                        existing_lead.phone = lead_data.get("phone")
+                        existing_lead.company = lead_data.get("company")
+                        existing_lead.lead_status = lead_data.get("status", "new")
+                        existing_lead.lead_stage = lead_data.get("stage")
+                        existing_lead.assigned_to = lead_data.get("assigned_to_name")
+                        existing_lead.updated_at = datetime.utcnow().isoformat()
+                        existing_lead.raw_data = lead_data
+                        session.add(existing_lead)
+                    else:
+                        # Create new lead
+                        new_lead = ScalerLead(
+                            lead_id=lead_data["id"],
+                            lead_name=lead_data.get("name", ""),
+                            email=lead_data.get("email"),
+                            phone=lead_data.get("phone"),
+                            company=lead_data.get("company"),
+                            lead_source=lead_data.get("source"),
+                            lead_status=lead_data.get("status", "new"),
+                            lead_stage=lead_data.get("stage"),
+                            created_date=lead_data.get("created_at"),
+                            assigned_to=lead_data.get("assigned_to_name"),
+                            raw_data=lead_data,
+                            crm_auth_id=member_crm_auth.id
+                        )
+                        session.add(new_lead)
+                    
+                    leads_synced += 1
+            
+            # Check if there are more pages
+            if len(result["leads"]) < 100:
+                break
+            page += 1
+        
+        session.commit()
+        return leads_synced
+    
+    async def _sync_team_member_activities(
+        self,
+        session: Session,
+        member_crm_auth: ScalerCRMAuth,
+        access_token: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> int:
+        """Sync activities for team member's leads only"""
+        activities_synced = 0
+        
+        # Get member's leads
+        member_leads = session.exec(
+            select(ScalerLead).where(ScalerLead.crm_auth_id == member_crm_auth.id)
+        ).all()
+        
+        logger.info(f"Syncing activities for {len(member_leads)} member leads")
+        
+        for lead in member_leads:
+            try:
+                result = await self.get_activities(
+                    access_token,
+                    lead_id=lead.lead_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    per_page=100
+                )
+                
+                if "error" in result:
+                    logger.error(f"Error syncing activities for lead {lead.lead_id}: {result['error']}")
+                    continue
+                
+                for activity_data in result.get("activities", []):
+                    existing_activity = session.exec(
+                        select(ScalerActivity).where(
+                            ScalerActivity.activity_id == activity_data["id"],
+                            ScalerActivity.crm_auth_id == member_crm_auth.id
+                        )
+                    ).first()
+                    
+                    if not existing_activity:
+                        new_activity = ScalerActivity(
+                            activity_id=activity_data["id"],
+                            activity_type=activity_data.get("activity_type", "unknown"),
+                            activity_subject=activity_data.get("activity_name"),
+                            activity_description=activity_data.get("notes"),
+                            activity_date=activity_data.get("activity_time") or activity_data.get("created_at"),
+                            raw_data=activity_data,
+                            crm_auth_id=member_crm_auth.id,
+                            lead_id=lead.id
+                        )
+                        session.add(new_activity)
+                        activities_synced += 1
+                
+            except Exception as e:
+                logger.error(f"Error syncing activities for lead {lead.lead_id}: {str(e)}")
+                continue
+        
+        session.commit()
+        return activities_synced
+    
+    async def _sync_team_member_conversations(
+        self,
+        session: Session,
+        member_crm_auth: ScalerCRMAuth,
+        access_token: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> int:
+        """Sync conversations for team member's leads only"""
+        conversations_synced = 0
+        
+        # Get member's leads (limit to prevent timeout)
+        member_leads = session.exec(
+            select(ScalerLead).where(ScalerLead.crm_auth_id == member_crm_auth.id).limit(20)
+        ).all()
+        
+        logger.info(f"Syncing conversations for {len(member_leads)} member leads")
+        
+        for lead in member_leads:
+            try:
+                # Get call text analysis
+                text_result = await self.get_call_text_analysis(
+                    access_token=access_token,
+                    lead_uuid=lead.lead_id,
+                    page_size=10,
+                    page=1
+                )
+                
+                if not text_result.get("error") and text_result.get("data"):
+                    calls_data = text_result.get("data", {}).get("data", [])
+                    if isinstance(text_result.get("data"), list):
+                        calls_data = text_result.get("data", [])
+                    
+                    for call_data in calls_data:
+                        conversation_id = call_data.get("call_id") or call_data.get("id")
+                        if conversation_id:
+                            existing_conv = session.exec(
+                                select(ScalerConversation).where(
+                                    ScalerConversation.conversation_id == str(conversation_id),
+                                    ScalerConversation.crm_auth_id == member_crm_auth.id
+                                )
+                            ).first()
+                            
+                            if not existing_conv:
+                                new_conv = ScalerConversation(
+                                    conversation_id=str(conversation_id),
+                                    conversation_type="call",
+                                    conversation_date=call_data.get("date") or datetime.utcnow().isoformat(),
+                                    duration_seconds=call_data.get("duration", 0),
+                                    transcript_available=True,
+                                    transcript_summary=call_data.get("summary_of_call") or call_data.get("summary"),
+                                    sentiment_score=call_data.get("call_score"),
+                                    raw_data=call_data,
+                                    crm_auth_id=member_crm_auth.id,
+                                    lead_id=lead.id
+                                )
+                                session.add(new_conv)
+                                conversations_synced += 1
+                
+            except Exception as e:
+                logger.error(f"Error syncing conversations for lead {lead.lead_id}: {str(e)}")
+                continue
+        
+        session.commit()
+        return conversations_synced
+
     async def __aenter__(self):
         return self
     

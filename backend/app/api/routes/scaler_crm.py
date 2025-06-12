@@ -768,3 +768,219 @@ async def get_team_performance(
             status_code=500,
             detail=f"Failed to get team performance: {str(e)}"
         )
+
+
+@router.get("/manager-info", response_model=Dict[str, Any])
+async def get_manager_info(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+) -> Any:
+    """
+    Get manager information and team members.
+    Returns whether the user is a manager and their team members if applicable.
+    """
+    from app.models import DarwinBoxEmployee
+    
+    # Get current user's employee record
+    employee = session.exec(
+        select(DarwinBoxEmployee).where(DarwinBoxEmployee.email == current_user.email)
+    ).first()
+    
+    if not employee:
+        return {
+            "is_manager": False,
+            "employee_info": None,
+            "team_members": []
+        }
+    
+    # Get team members if user is a manager
+    team_members = []
+    if employee.is_manager:
+        team = session.exec(
+            select(DarwinBoxEmployee).where(
+                DarwinBoxEmployee.reporting_manager_id == employee.darwinbox_id,
+                DarwinBoxEmployee.employment_status == "active"
+            ).order_by(DarwinBoxEmployee.full_name)
+        ).all()
+        
+        # Check CRM sync status for each team member
+        team_members = []
+        for member in team:
+            # Get user account
+            member_user = session.exec(
+                select(User).where(User.email == member.email)
+            ).first()
+            
+            member_info = {
+                "id": str(member.id),
+                "darwinbox_id": member.darwinbox_id,
+                "full_name": member.full_name,
+                "email": member.email,
+                "designation": member.designation,
+                "department": member.department,
+                "has_user_account": member_user is not None,
+                "crm_sync_status": None,
+                "last_sync_at": None
+            }
+            
+            if member_user:
+                # Check CRM sync status
+                member_crm = session.exec(
+                    select(ScalerCRMAuth).where(
+                        ScalerCRMAuth.owner_id == member_user.id,
+                        ScalerCRMAuth.is_active == True
+                    )
+                ).first()
+                
+                if member_crm:
+                    member_info["crm_sync_status"] = member_crm.sync_status
+                    member_info["last_sync_at"] = member_crm.last_sync_at
+            
+            team_members.append(member_info)
+    
+    return {
+        "is_manager": employee.is_manager,
+        "employee_info": {
+            "id": str(employee.id),
+            "full_name": employee.full_name,
+            "email": employee.email,
+            "designation": employee.designation,
+            "department": employee.department
+        },
+        "team_members": team_members
+    }
+
+
+@router.post("/sync-team-member", response_model=Dict[str, Any])
+async def sync_team_member_data(
+    *,
+    session: SessionDep,
+    current_user: CurrentUser,
+    background_tasks: BackgroundTasks,
+    member_email: str,
+    months_to_sync: int = Query(default=3, ge=1, le=12),
+) -> Any:
+    """
+    Sync a team member's CRM data using the manager's authentication.
+    Only available for managers to sync their team members' data.
+    """
+    from app.models import DarwinBoxEmployee, User
+    
+    # Verify current user is a manager
+    manager_employee = session.exec(
+        select(DarwinBoxEmployee).where(DarwinBoxEmployee.email == current_user.email)
+    ).first()
+    
+    if not manager_employee or not manager_employee.is_manager:
+        raise HTTPException(status_code=403, detail="This feature is only available for managers")
+    
+    # Verify the requested member reports to this manager
+    member_employee = session.exec(
+        select(DarwinBoxEmployee).where(
+            DarwinBoxEmployee.email == member_email,
+            DarwinBoxEmployee.reporting_manager_id == manager_employee.darwinbox_id
+        )
+    ).first()
+    
+    if not member_employee:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Team member {member_email} not found or doesn't report to you"
+        )
+    
+    # Get manager's CRM auth
+    manager_crm_auth = session.exec(
+        select(ScalerCRMAuth).where(
+            ScalerCRMAuth.owner_id == current_user.id,
+            ScalerCRMAuth.is_active == True
+        )
+    ).first()
+    
+    if not manager_crm_auth:
+        raise HTTPException(
+            status_code=400,
+            detail="Manager must have an active CRM connection to sync team member data"
+        )
+    
+    # Get or create member's user account
+    member_user = session.exec(
+        select(User).where(User.email == member_email)
+    ).first()
+    
+    if not member_user:
+        # Create user account for team member
+        member_user = User(
+            email=member_email,
+            full_name=member_employee.full_name,
+            is_active=True
+        )
+        session.add(member_user)
+        session.commit()
+        session.refresh(member_user)
+    
+    # Get or create member's CRM auth record
+    member_crm_auth = session.exec(
+        select(ScalerCRMAuth).where(ScalerCRMAuth.owner_id == member_user.id)
+    ).first()
+    
+    if not member_crm_auth:
+        # Create CRM auth record for member (using manager's tokens)
+        member_crm_auth = ScalerCRMAuth(
+            owner_id=member_user.id,
+            crm_user_email=member_email,
+            crm_user_name=member_employee.full_name,
+            # Note: Using manager's encrypted tokens
+            encrypted_access_token=manager_crm_auth.encrypted_access_token,
+            encrypted_refresh_token=manager_crm_auth.encrypted_refresh_token,
+            token_expires_at=manager_crm_auth.token_expires_at,
+            sync_status="pending",
+            created_at=datetime.utcnow().isoformat(),
+            updated_at=datetime.utcnow().isoformat()
+        )
+        session.add(member_crm_auth)
+        session.commit()
+        session.refresh(member_crm_auth)
+    
+    # Check if sync is already in progress
+    if member_crm_auth.sync_status == "syncing":
+        return {
+            "status": "in_progress",
+            "message": f"Sync already in progress for {member_employee.full_name}",
+            "last_sync": member_crm_auth.last_sync_at
+        }
+    
+    # Update sync status
+    member_crm_auth.sync_status = "syncing"
+    session.add(member_crm_auth)
+    session.commit()
+    
+    # Create background task to sync member's data
+    async def sync_member_with_manager_auth():
+        from sqlmodel import Session as NewSession
+        with NewSession(engine) as new_session:
+            # Re-fetch records in new session
+            fresh_member_crm = new_session.get(ScalerCRMAuth, member_crm_auth.id)
+            fresh_manager_crm = new_session.get(ScalerCRMAuth, manager_crm_auth.id)
+            fresh_member_user = new_session.get(User, member_user.id)
+            
+            if fresh_member_crm and fresh_manager_crm and fresh_member_user:
+                # Use custom sync method that filters by team member's name/email
+                await scaler_crm_service.sync_team_member_data(
+                    session=new_session,
+                    member_user=fresh_member_user,
+                    member_crm_auth=fresh_member_crm,
+                    manager_crm_auth=fresh_manager_crm,
+                    member_email=member_email,
+                    months_to_sync=months_to_sync
+                )
+    
+    # Start sync in background
+    background_tasks.add_task(sync_member_with_manager_auth)
+    
+    return {
+        "status": "started",
+        "message": f"Started syncing {member_employee.full_name}'s CRM data for {months_to_sync} months",
+        "member_email": member_email,
+        "sync_id": str(member_crm_auth.id)
+    }
