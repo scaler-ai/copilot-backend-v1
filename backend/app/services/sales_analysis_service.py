@@ -964,7 +964,7 @@ class SalesAnalysisService:
                 latest_analysis = session.exec(
                     select(SalesPerformanceAnalysis).where(
                         SalesPerformanceAnalysis.crm_auth_id == crm_auth.id
-                    ).order_by(SalesPerformanceAnalysis.created_at.desc())
+                    ).order_by(SalesPerformanceAnalysis.generated_at.desc())
                 ).first()
                 
                 # Get skill ratings
